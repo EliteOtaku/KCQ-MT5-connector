@@ -2,11 +2,10 @@
 
 ## Purpose
 
-把 MT5 的「服务器墙钟按 UTC epoch 解释」伪 UTC 时间轴换算为真 UTC，并按锚时区
-重采样高周期 K 线，使图表显示、指标计算与存储三层数据同源一致。行为基准：
-传统品种（外汇/金属/指数）锚 Europe/Athens（EET/EEST 自动 DST，冬 +2 / 夏 +3），
-加密品种锚 UTC（币安标准边界 4h={00,04,08...}）；周日短棒不剔除——日内原生保留，
-高周期在重采样中自然并入周一首根。
+把 MT5 的「服务器墙钟按 UTC epoch 解释」伪 UTC 时间轴换算为真 UTC，并把高周期
+K 线按 UTC 自然边界重采样，使图表显示、指标计算与存储三层数据同源一致。行为基准：
+锚恒为 UTC（4h 边界 {00,04,08,12,16,20}，日线边界 UTC 00:00）。周日短棒不剔除——
+日内原生保留，高周期在重采样中自然并入周一首根。
 
 ## Requirements
 
@@ -30,39 +29,35 @@
 
 ### Requirement: 对齐开关语义
 
-`ALIGN_TZ` env SHALL 控制对齐：`off` 关闭（取 MT5 原生周期数据，仅偏移校正）；
-`gmt2`/`gmt3` 强制开启且传统品种锚固定偏移；`auto`（默认）仅在检测到 Exness
-平台（company/server 含 exness）时开启。加密品种 SHALL 始终锚 UTC，不受 gmt2/gmt3 影响。
-对齐状态 SHALL 在 probe 响应的 `alignment.anchor` 上报。
+`ALIGN_UTC` env SHALL 控制对齐：`on`（默认）开启，锚恒为 UTC；`off` 关闭，取 MT5
+原生周期边界（仅做伪 UTC → 真 UTC 偏移校正）。对齐 SHALL NOT 依赖券商平台探测或品种
+类别。非法取值 SHALL 回落 `on` 且不中断启动。
 
-#### Scenario: auto 模式非 Exness 平台
+对齐状态 SHALL 在 probe 响应的 `alignment.anchor` 上报：开启时为 `UTC`，关闭时为 `off`。
 
-- **WHEN** 终端 company/server 不含 exness 且 ALIGN_TZ=auto
-- **THEN** 对齐关闭，4h/daily/weekly/monthly 走原生周期端点
+#### Scenario: 关闭对齐走原生周期
 
-### Requirement: 高周期锚时区重采样
+- **WHEN** `ALIGN_UTC=off` 且请求 `barAggregation=aligned`
+- **THEN** 系统返回 400 `UNSUPPORTED_CAPABILITY`，不返回原生数据冒充对齐
 
-对齐开启时，4h/daily SHALL 从 H1、weekly/monthly SHALL 从 D1 按锚时区重采样：
-锚时区归日（normalize），4h 再按 hour//4*4 分桶，weekly 取 ISO 周锚（周 00:00），
-monthly 取自然月首日。输出时间戳 SHALL 为锚时区边界对应的 UTC 毫秒；
+#### Scenario: 开启对齐与券商无关
+
+- **WHEN** `ALIGN_UTC=on` 且终端来自任意券商
+- **THEN** 4h/daily/weekly/monthly 按 UTC 自然边界重采样
+
+### Requirement: 高周期 UTC 边界重采样
+
+对齐开启时，4h/daily SHALL 从 H1、weekly/monthly SHALL 从 D1 按 UTC 自然边界重采样：
+日线取 UTC 自然日 00:00，4h 再按 hour//4*4 分桶，weekly 取 ISO 周锚（周一 00:00 UTC），
+monthly 取自然月首日 00:00 UTC。输出时间戳 SHALL 为 UTC 桶边界毫秒；
 OHLCV 按桶聚合（open=first, high=max, low=min, close=last, volume/turnover=sum）。
 
-#### Scenario: 冬令时周日短棒并入周一
+#### Scenario: 周日短棒并入 UTC 周一
 
-- **WHEN** 输入 H1 序列始于周日 22:00 UTC（= 周一 EET 00:00）且跨 72 小时
-- **THEN** daily 重采样输出 3 根，首根开于周日 22:00 UTC、量为 24×H1 量
+- **WHEN** 输入 H1 序列始于周日 22:00 UTC 且跨 72 小时
+- **THEN** daily 重采样输出 3 根，首根开于周日 00:00 UTC、量为 24×H1 量
 
-#### Scenario: 夏令时边界随 EEST 平移
+#### Scenario: 全品种共用同一 UTC 锚
 
-- **WHEN** 8 月（EEST）输入 H1 序列始于周日 21:00 UTC
-- **THEN** daily 首根开于周日 21:00 UTC；4h 边界为 {21,01,05,09,13,17} UTC
-
-#### Scenario: DST 切换日
-
-- **WHEN** 3 月最后一个周日（02:00→03:00 本地）跨越重采样
-- **THEN** 该周日（EET）日线只含 23 根 H1，次日（EEST）起开于 21:00 UTC
-
-#### Scenario: 加密品种 UTC 锚
-
-- **WHEN** 品种为 BTCUSD（crypto）且对齐开启
-- **THEN** 4h 边界为 {00,04,08,12,16,20} UTC，与 DST 无关
+- **WHEN** 分别对齐 XAUUSD（forex）与 BTCUSD（crypto）的同段 H1
+- **THEN** 两者 4h 边界均为 {00,04,08,12,16,20} UTC，日线边界均为 00:00 UTC

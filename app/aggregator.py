@@ -15,7 +15,6 @@ from .config import Settings
 from .frames import Bar, ClosedFrame, FormingFrame, Frame, SnapshotFrame, StatusFrame
 from .gateway import Mt5Gateway
 from .hub import StreamHub, StreamKey
-from .symbols import guess_asset_class
 
 logger = logging.getLogger("mt5.aggregator")
 
@@ -144,10 +143,8 @@ class Aggregator:
         """单流轮询主循环：首采样出快照，之后 tick 探针驱动 + 静默退避。"""
         symbol, period, bar_aggregation = key
         detector = ChangeDetector(symbol, period)
-        asset_class = guess_asset_class(symbol)
         align_enabled = bar_aggregation == ALIGNED_BAR_AGGREGATION
         plan = _aligned_plan(period, align_enabled)
-        anchor = align.anchor_tz(asset_class, self._settings.align_mode) if align_enabled else None
         wake = asyncio.Event()
         self._wake[key] = wake
         quiet = 0
@@ -196,7 +193,7 @@ class Aggregator:
                     quiet += 1
                 else:
                     quiet = 0
-                    bars = await self._fetch_tail(symbol, period, plan, anchor)
+                    bars = await self._fetch_tail(symbol, period, plan)
                     for frame in detector.sample(bars):
                         self._hub.publish(key, frame)
             except asyncio.CancelledError:
@@ -229,17 +226,17 @@ class Aggregator:
         max_age = max(period_seconds * 2, 900)
         return (time.time() - tick.time_seconds) <= max_age
 
-    async def _fetch_tail(self, symbol: str, period: str, plan: str, anchor) -> list[Bar]:
+    async def _fetch_tail(self, symbol: str, period: str, plan: str) -> list[Bar]:
         """按方案拉取尾部序列并统一为真 UTC Bar（升序）。"""
         offset = await self._clock.ensure_fresh()
         if plan == "h1":
             count = _H1_FETCH_COUNTS[period]
             raw = await self._gateway.copy_rates_from_pos(symbol, "60min", count)
-            aligned = align.resample(raw, period, anchor, offset)
+            aligned = align.resample(raw, period, offset)
         elif plan == "d1":
             count = _D1_FETCH_COUNTS[period]
             raw = await self._gateway.copy_rates_from_pos(symbol, "daily", count)
-            aligned = align.resample(raw, period, anchor, offset)
+            aligned = align.resample(raw, period, offset)
         else:
             raw = await self._gateway.copy_rates_from_pos(symbol, period, self._settings.snapshot_bars)
             aligned = [

@@ -21,6 +21,20 @@ def test_publish_assigns_monotonic_seq_per_stream():
     assert hub.last_seq(key) == 2
 
 
+def test_aggregation_mode_separates_stream_identity():
+    hub = StreamHub()
+    key = ("XAUUSD", "4h", "original")
+    aligned_key = ("XAUUSD", "4h", "aligned")
+
+    hub.publish(aligned_key, _frame())
+    assert hub.publish(key, _frame()) == 1  # 不共用 seq
+    assert hub.replay(aligned_key, 0) and hub.replay(key, 0)
+
+    queue = hub.register(key)
+    hub.publish(aligned_key, _frame())
+    assert queue.qsize() == 0  # 不跨模式扇出
+
+
 def test_ring_buffer_caps_entries():
     hub = StreamHub(ring_size=3)
     key = ("XAUUSD", "4h", "original")

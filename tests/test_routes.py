@@ -32,7 +32,8 @@ def test_probe_reports_online_with_alignment(client: TestClient):
     assert resp.status_code == 200
     body = resp.json()
     assert body["data"]["status"] == "online"
-    assert body["data"]["alignment"]["enabled"] is True  # Exness + auto
+    assert body["data"]["alignment"]["enabled"] is True  # 默认对齐开启（UTC）
+    assert body["data"]["alignment"]["anchor"] == "UTC"
     assert body["data"]["capabilities"]["bars"]["periods"][0] == "1min"
     assert "requestId" in body
 
@@ -104,9 +105,9 @@ def test_bars_native_period_applies_measured_offset(fake_gateway: FakeGateway):
     assert resp.json()["data"]["olderData"] == "exhausted"
 
 
-def test_bars_daily_aligned_resamples_from_h1(fake_gateway: FakeGateway):
-    # Exness + auto 对齐：daily 自 H1 按 Europe/Athens 重采样
-    start = datetime(2026, 8, 16, 21, 0, tzinfo=UTC)  # 周日 21:00 UTC = 周一 EEST 00:00
+def test_bars_daily_aligned_resamples_on_utc_boundary(fake_gateway: FakeGateway):
+    # 对齐开启：daily 自 H1 按 UTC 自然日重采样
+    start = datetime(2026, 8, 16, 0, 0, tzinfo=UTC)
     fake_gateway.rates[("XAUUSD", "60min")] = _h1(start, 72)
     app = create_app(settings=Settings(), gateway=fake_gateway)
     with TestClient(app) as daily_client:
@@ -128,6 +129,27 @@ def test_bars_daily_aligned_resamples_from_h1(fake_gateway: FakeGateway):
         _ms(start + timedelta(days=d)) for d in range(3)
     ]
     assert items[0]["volume"] == 24 * 100
+
+
+def test_bars_rejects_aligned_when_alignment_disabled(fake_gateway: FakeGateway):
+    app = create_app(settings=Settings(align_mode="off"), gateway=fake_gateway)
+    with TestClient(app) as off_client:
+        resp = off_client.post(
+            "/api/v1/market-data/bars",
+            json={
+                "sourceId": "mt5",
+                "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
+                "period": "daily",
+                "adjustment": "none",
+                "barAggregation": "aligned",
+                "limit": 10,
+            },
+        )
+        probe = off_client.get("/api/v1/market-data/sources/mt5/probe")
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+    assert probe.json()["data"]["alignment"]["anchor"] == "off"
 
 
 def test_bars_rejects_unsupported_period_and_adjustment(client: TestClient):

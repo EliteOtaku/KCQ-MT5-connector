@@ -9,11 +9,11 @@ MT5 高周期对齐会从 H1/D1 重采样。前端目前无法表达单次请求
 - bars REST 请求新增必填 `barAggregation`：`original` 或 `aligned`。
 - SSE 订阅新增同名必填 query 参数，并把它纳入流身份。
 - `original` 返回 MT5 原生周期边界，但始终将服务器伪 UTC 矫正为真 UTC。
-- `aligned` 在连接器配置允许对齐时，对高周期按既有锚时区重采样；配置不允许时明确拒绝请求，禁止静默降级。
+- `aligned` 在连接器配置允许（`ALIGN_UTC=on`）时，对高周期按 UTC 自然边界重采样；配置不允许时明确拒绝请求，禁止静默降级。
 - REST 响应回显实际 `barAggregation`。
 
 ## Non-goals
 
 - 不改变 MT5 单工作线程约束。
 - 不关闭服务器伪 UTC 到真 UTC 的偏移校正。
-- 不改变锚时区、DST 或周日短棒处理规则。
+- 不改变周日短棒处理规则（不剔除，重采样中自然并入周一）。

@@ -25,7 +25,6 @@ class FakeGateway:
         # (symbol, period) → 升序服务器时间 Bar 列表；copy_rates_from_pos 取尾部 count 根
         self.rates: dict[tuple[str, str], list[Bar]] = {}
         self.tick_offset_seconds = tick_offset_seconds
-        self.exness = True
         self.connected = True
 
     # ── 生命周期 ──
@@ -47,15 +46,12 @@ class FakeGateway:
             raise RuntimeError("terminal not connected")
         return {
             "terminal": "FakeTerminal",
-            "company": "Exness" if self.exness else "Other",
+            "company": "FakeTerminal",
             "connected": True,
             "account": 123456,
-            "server": "Exness-MT5Trial" if self.exness else "Other-Server",
+            "server": "Fake-Server",
             "currency": "USD",
         }
-
-    def is_exness(self) -> bool:
-        return self.exness
 
     # ── 数据查询 ──
 
@@ -93,7 +89,7 @@ def fake_gateway() -> FakeGateway:
 
 @pytest.fixture
 def client(fake_gateway: FakeGateway) -> TestClient:
-    """默认 Exness + auto 对齐的测试应用。"""
+    """默认对齐开启（UTC）的测试应用。"""
     app = create_app(settings=Settings(), gateway=fake_gateway)
     with TestClient(app) as test_client:
         yield test_client

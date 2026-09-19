@@ -20,7 +20,7 @@
 #### Scenario: 终端在线
 
 - **WHEN** MT5 终端已连接
-- **THEN** 响应 `data.status` 为 `online`，`alignment.enabled` 按 ALIGN_TZ 与 Exness 判定给出
+- **THEN** 响应 `data.status` 为 `online`，`alignment.enabled` 按 `ALIGN_UTC` 开关给出、`alignment.anchor` 为 `UTC` 或 `off`
 - **THEN** `capabilities.bars.periods` 覆盖 1min/5min/15min/30min/60min/4h/daily/weekly/monthly
 
 #### Scenario: 终端离线
