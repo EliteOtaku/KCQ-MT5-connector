@@ -34,13 +34,13 @@ KCQ-NexusAI 的 core 行情层。
 - 测试禁止依赖真实 MT5 终端：`tests/conftest.py` 的 FakeGateway 实现网关异步接口。
 - SSE 流测试用裸 ASGI send/receive（TestClient/httpx ASGITransport 不支持无限流消费）；
   receive 桩必须阻塞挂起（立即返回会饿死事件循环）。
-- 对齐用例为行为基准：冬夏 4h/日线边界、DST 切换日、周月锚、偏移换算——改对齐实现不得改断言。
+- 对齐用例为行为基准：UTC 4h/日线/周/月边界、跨月跨周归属、偏移换算——改对齐实现不得改断言。
 
 ## Domain Invariants
 
 - MT5 时间戳是伪 UTC（服务器墙钟），出网关前必须经实测偏移转真 UTC。
-- 周日短棒不剔除：日内原生保留；4h/日/周/月经锚时区重采样自然并入周一首根。
-- 对齐锚：加密=UTC（币安标准）；传统=Europe/Athens（EET/EEST 自动 DST）；ALIGN_TZ 可强制/关闭。
+- 周日短棒不剔除：日内原生保留；4h/日/周/月经 UTC 边界重采样自然并入周一首根。
+- 对齐锚恒为 UTC（4h 边界 {00,04,08,12,16,20}，日线 UTC 00:00）；`ALIGN_UTC=off` 关闭对齐走原生边界。
 
 ## Committing
 

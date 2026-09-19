@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from . import align
 from .aggregator import Aggregator
+from .bar_aggregation import ALIGNED_BAR_AGGREGATION, BarAggregation
 from .clock import ServerClock
 from .config import Settings
 from .frames import Bar, frame_payload
@@ -55,14 +56,9 @@ def _error(code: str, message: str, status_code: int) -> JSONResponse:
     )
 
 
-def _alignment_enabled(settings: Settings, gateway: Mt5Gateway) -> bool:
-    """对齐开关（与 aggregator 同一规则）：off 关、auto 仅 Exness、gmt2/gmt3 强制。"""
-    mode = settings.align_mode
-    if mode == "off":
-        return False
-    if mode == "auto":
-        return gateway.is_exness()
-    return True
+def _alignment_enabled(settings: Settings) -> bool:
+    """对齐开关（与 aggregator 同一规则）：off 关，其余对齐到 UTC。"""
+    return settings.align_mode != "off"
 
 
 # ── 请求模型 ──
@@ -95,6 +91,7 @@ class BarRequest(BaseModel):
     adjustment: str = "none"
     limit: int = Field(default=300, ge=1, le=MAX_BAR_LIMIT)
     beforeTimestamp: int | None = None
+    barAggregation: BarAggregation
 
 
 # ── probe ──
@@ -118,14 +115,8 @@ async def probe(request: Request) -> dict:
         status = "offline"
         message = str(exc)
 
-    aligned = _alignment_enabled(settings, gateway) if status != "offline" else False
-    anchor_label = "Europe/Athens"
-    if settings.align_mode == "gmt2":
-        anchor_label = "GMT+2"
-    elif settings.align_mode == "gmt3":
-        anchor_label = "GMT+3"
-    elif settings.align_mode == "off":
-        anchor_label = "off"
+    aligned = _alignment_enabled(settings) if status != "offline" else False
+    anchor_label = "UTC"
 
     # 状态补充说明：离线时是诊断原因，在线时是对齐摘要（前端聚合源管理直接展示）
     if status == "offline":
@@ -228,11 +219,10 @@ async def fetch_bars(body: BarRequest, request: Request):
 
     try:
         offset = await clock.ensure_fresh()
-        asset_class = guess_asset_class(body.instrument.symbol)
-        aligned = _alignment_enabled(settings, gateway)
-        bars = await _load_series(
-            gateway, body, asset_class, aligned, offset, settings.align_mode
-        )
+        if body.barAggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(settings):
+            return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
+        aligned = body.barAggregation == ALIGNED_BAR_AGGREGATION
+        bars = await _load_series(gateway, body, aligned, offset)
     except Exception as exc:  # noqa: BLE001 — 终端/品种错误统一 502
         return _error("UPSTREAM_UNAVAILABLE", str(exc), 502)
 
@@ -242,6 +232,7 @@ async def fetch_bars(body: BarRequest, request: Request):
             "instrumentId": body.instrument.id,
             "period": body.period,
             "adjustment": body.adjustment,
+            "barAggregation": body.barAggregation,
             "timezone": "UTC",
             "items": [
                 {
@@ -275,10 +266,8 @@ def _utc_bars(raw: list[Bar], offset_minutes: int) -> list[Bar]:
 async def _load_series(
     gateway: Mt5Gateway,
     body: BarRequest,
-    asset_class: str,
     aligned: bool,
     offset: int,
-    align_mode: str,
 ) -> list[Bar]:
     """按对齐方案与游标组装最终序列（升序、末位为最新，最多 limit 根）。"""
     period = body.period
@@ -292,7 +281,6 @@ async def _load_series(
     if needs_resample:
         source_period = "60min" if period in align.RESAMPLE_H1_TARGETS else "daily"
         source_ms = _PERIOD_SECONDS[source_period] * 1000
-        anchor = align.anchor_tz(asset_class, align_mode)
         if body.beforeTimestamp is not None:
             span_ms = limit * period_ms + RANGE_MARGIN_MS
             raw = await gateway.copy_rates_range(
@@ -304,7 +292,7 @@ async def _load_series(
         else:
             count = min(math.ceil(limit * period_ms / source_ms) + 48, 20_000)
             raw = await gateway.copy_rates_from_pos(symbol, source_period, count)
-        series = align.resample(raw, period, anchor, offset)
+        series = align.resample(raw, period, offset)
         if body.beforeTimestamp is not None:
             series = [bar for bar in series if bar.time_ms < body.beforeTimestamp]
     else:
@@ -323,8 +311,13 @@ async def _load_series(
 
 
 @router.get("/sources/mt5/stream")
-async def stream(symbol: str, period: str, request: Request):
-    """单连接固定订阅一个 (symbol, period)；切品种 = 断开重连。
+async def stream(
+    symbol: str,
+    period: str,
+    request: Request,
+    barAggregation: BarAggregation,
+):
+    """单连接固定订阅一个 (symbol, period, barAggregation)；切换任一维度均断开重连。
 
     断线重连凭 Last-Event-ID 从环形缓冲补帧；无 ID 视为新订阅（下发快照）。
     """
@@ -334,10 +327,13 @@ async def stream(symbol: str, period: str, request: Request):
     if not symbol.strip():
         return _error("INVALID_REQUEST", "symbol is required", 400)
 
+    if barAggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(state.settings):
+        return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
+
     hub: StreamHub = state.hub
     aggregator: Aggregator = state.aggregator
     settings: Settings = state.settings
-    key = (symbol.strip().upper(), period)
+    key = (symbol.strip().upper(), period, barAggregation)
 
     last_id_raw = request.headers.get("last-event-id")
     last_id = int(last_id_raw) if last_id_raw and last_id_raw.isdigit() else None

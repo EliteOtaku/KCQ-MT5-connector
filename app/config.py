@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-# 对齐模式合法取值
-ALIGN_MODES = ("auto", "gmt2", "gmt3", "off")
+# 对齐开关合法取值：on=高周期按 UTC 自然边界重采样 / off=取原生周期边界
+ALIGN_MODES = ("on", "off")
 
 
 def _parse_bool(raw: str | None, default: bool) -> bool:
@@ -25,8 +25,8 @@ class Settings:
     terminal_path: str | None = None
     # 仅允许 Exness 平台（公司/服务器名校验）
     exness_only: bool = True
-    # 对齐模式：auto=检测到 Exness 才对齐 / gmt2 / gmt3 / off
-    align_mode: str = "auto"
+    # 对齐开关：on=高周期对齐到 UTC 自然边界 / off=取原生周期边界
+    align_mode: str = "on"
     # 服务器 UTC 偏移覆盖（小时）；缺省走实测
     server_utc_offset_override: int | None = None
     # 活跃订阅轮询基线（秒）：tick 探针间隔
@@ -51,9 +51,9 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     """从环境变量构造 Settings；非法值回落默认并保持启动不中断。"""
     source = dict(os.environ if env is None else env)
 
-    align_raw = source.get("ALIGN_TZ", "auto").strip().lower()
+    align_raw = source.get("ALIGN_UTC", "on").strip().lower()
     if align_raw not in ALIGN_MODES:
-        align_raw = "auto"
+        align_raw = "on"
 
     offset_raw = source.get("EXNESS_SERVER_UTC_OFFSET", "").strip()
     try:

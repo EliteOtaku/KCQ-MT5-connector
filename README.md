@@ -16,7 +16,7 @@ FastAPI（app/routes.py）
 ```
 
 - **实时链路**：连接器单采样循环轮询 MT5 → SSE 单连接推帧。无 WebSocket、无浏览器轮询。
-- **时区对齐**：日内（1m-1h）原生序列仅做服务器偏移校正；4h/日线自 H1、周/月自 D1 按锚时区重采样——加密品种锚 UTC（币安标准），传统品种锚 Europe/Athens（EET/EEST 自动 DST），周日短棒自然并入周一首根。
+- **时区对齐**：日内（1m-1h）原生序列仅做服务器偏移校正；4h/日线自 H1、周/月自 D1 按 UTC 自然边界重采样，周日短棒自然并入周一首根。锚恒为 UTC，不随券商平台或品种类别变化。
 - **服务器偏移**：MT5 时间戳是"服务器墙钟按 UTC epoch 解释"的伪 UTC，连接器用最后 tick 时间实测偏移（模 24h 归一 ±12h），`EXNESS_SERVER_UTC_OFFSET` 可覆盖。
 
 规范文档见 [openspec/](openspec/)（OpenSpec 规格：REST 协议 / SSE 流 / 对齐 / 终端网关 / 品种目录）。
@@ -40,7 +40,7 @@ KCQ-NexusAI 侧：`pnpm setup`（克隆本仓库到同级目录）→ `pnpm conn
 | --- | --- | --- |
 | `MT5_TERMINAL_PATH` | 自动探测 | 终端 `terminal64.exe` 全路径（如 `C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe`） |
 | `EXNESS_ONLY` | `1` | 仅允许 Exness 平台（company/server 校验）；`0` 放开 |
-| `ALIGN_TZ` | `auto` | 对齐模式：`auto`=检测到 Exness 才对齐 / `gmt2` / `gmt3` / `off` |
+| `ALIGN_UTC` | `on` | 对齐开关：`on`=高周期按 UTC 自然边界重采样 / `off`=取原生周期边界 |
 | `EXNESS_SERVER_UTC_OFFSET` | 实测 | 服务器 UTC 偏移覆盖（小时，如 `0`/`2`/`3`） |
 | `MT5_PORT` | `8090` | HTTP 端口 |
 

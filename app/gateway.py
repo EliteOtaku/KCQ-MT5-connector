@@ -105,7 +105,7 @@ class Mt5Gateway:
         return next((p for p in EXNESS_TERMINAL_PATHS if Path(p).exists()), None)
 
     def _terminal_summary_sync(self) -> dict:
-        """读取终端/账户摘要并刷新 Exness 判定；不发起重连。"""
+        """读取终端/账户摘要并刷新平台判定；不发起重连。"""
         mt5 = self._mt5
         ti = mt5.terminal_info() if mt5 is not None else None
         ai = mt5.account_info() if mt5 is not None else None
@@ -177,10 +177,6 @@ class Mt5Gateway:
         return await asyncio.get_running_loop().run_in_executor(
             self._executor, self._terminal_summary_sync
         )
-
-    def is_exness(self) -> bool:
-        """最近一次终端摘要的 Exness 判定。"""
-        return self._is_exness
 
     @property
     def init_error(self) -> str | None:

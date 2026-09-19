@@ -9,12 +9,12 @@ import logging
 import time
 
 from . import align
+from .bar_aggregation import ALIGNED_BAR_AGGREGATION
 from .clock import ServerClock
 from .config import Settings
 from .frames import Bar, ClosedFrame, FormingFrame, Frame, SnapshotFrame, StatusFrame
 from .gateway import Mt5Gateway
 from .hub import StreamHub, StreamKey
-from .symbols import guess_asset_class
 
 logger = logging.getLogger("mt5.aggregator")
 
@@ -141,12 +141,10 @@ class Aggregator:
 
     async def _poll(self, key: StreamKey) -> None:
         """单流轮询主循环：首采样出快照，之后 tick 探针驱动 + 静默退避。"""
-        symbol, period = key
+        symbol, period, bar_aggregation = key
         detector = ChangeDetector(symbol, period)
-        asset_class = guess_asset_class(symbol)
-        align_enabled = self._align_enabled()
+        align_enabled = bar_aggregation == ALIGNED_BAR_AGGREGATION
         plan = _aligned_plan(period, align_enabled)
-        anchor = align.anchor_tz(asset_class, self._settings.align_mode) if align_enabled else None
         wake = asyncio.Event()
         self._wake[key] = wake
         quiet = 0
@@ -195,7 +193,7 @@ class Aggregator:
                     quiet += 1
                 else:
                     quiet = 0
-                    bars = await self._fetch_tail(symbol, period, plan, anchor)
+                    bars = await self._fetch_tail(symbol, period, plan)
                     for frame in detector.sample(bars):
                         self._hub.publish(key, frame)
             except asyncio.CancelledError:
@@ -209,15 +207,6 @@ class Aggregator:
         self._tasks.pop(key, None)
         self._background_until.pop(key, None)
         self._wake.pop(key, None)
-
-    def _align_enabled(self) -> bool:
-        """对齐开关：off 关闭；auto 仅 Exness 开启；gmt2/gmt3 强制开启。"""
-        mode = self._settings.align_mode
-        if mode == "off":
-            return False
-        if mode == "auto":
-            return self._gateway.is_exness()
-        return True
 
     def _current_interval(self, key: StreamKey, quiet: int) -> float:
         """当前轮询间隔：活跃/后台基线 × 静默指数退避，封顶 quiet_backoff_cap。"""
@@ -237,17 +226,17 @@ class Aggregator:
         max_age = max(period_seconds * 2, 900)
         return (time.time() - tick.time_seconds) <= max_age
 
-    async def _fetch_tail(self, symbol: str, period: str, plan: str, anchor) -> list[Bar]:
+    async def _fetch_tail(self, symbol: str, period: str, plan: str) -> list[Bar]:
         """按方案拉取尾部序列并统一为真 UTC Bar（升序）。"""
         offset = await self._clock.ensure_fresh()
         if plan == "h1":
             count = _H1_FETCH_COUNTS[period]
             raw = await self._gateway.copy_rates_from_pos(symbol, "60min", count)
-            aligned = align.resample(raw, period, anchor, offset)
+            aligned = align.resample(raw, period, offset)
         elif plan == "d1":
             count = _D1_FETCH_COUNTS[period]
             raw = await self._gateway.copy_rates_from_pos(symbol, "daily", count)
-            aligned = align.resample(raw, period, anchor, offset)
+            aligned = align.resample(raw, period, offset)
         else:
             raw = await self._gateway.copy_rates_from_pos(symbol, period, self._settings.snapshot_bars)
             aligned = [
