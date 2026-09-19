@@ -9,6 +9,7 @@ import logging
 import time
 
 from . import align
+from .bar_aggregation import ALIGNED_BAR_AGGREGATION
 from .clock import ServerClock
 from .config import Settings
 from .frames import Bar, ClosedFrame, FormingFrame, Frame, SnapshotFrame, StatusFrame
@@ -141,10 +142,10 @@ class Aggregator:
 
     async def _poll(self, key: StreamKey) -> None:
         """单流轮询主循环：首采样出快照，之后 tick 探针驱动 + 静默退避。"""
-        symbol, period = key
+        symbol, period, bar_aggregation = key
         detector = ChangeDetector(symbol, period)
         asset_class = guess_asset_class(symbol)
-        align_enabled = self._align_enabled()
+        align_enabled = bar_aggregation == ALIGNED_BAR_AGGREGATION
         plan = _aligned_plan(period, align_enabled)
         anchor = align.anchor_tz(asset_class, self._settings.align_mode) if align_enabled else None
         wake = asyncio.Event()
@@ -209,15 +210,6 @@ class Aggregator:
         self._tasks.pop(key, None)
         self._background_until.pop(key, None)
         self._wake.pop(key, None)
-
-    def _align_enabled(self) -> bool:
-        """对齐开关：off 关闭；auto 仅 Exness 开启；gmt2/gmt3 强制开启。"""
-        mode = self._settings.align_mode
-        if mode == "off":
-            return False
-        if mode == "auto":
-            return self._gateway.is_exness()
-        return True
 
     def _current_interval(self, key: StreamKey, quiet: int) -> float:
         """当前轮询间隔：活跃/后台基线 × 静默指数退避，封顶 quiet_backoff_cap。"""

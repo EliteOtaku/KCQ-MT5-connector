@@ -91,6 +91,7 @@ def test_bars_native_period_applies_measured_offset(fake_gateway: FakeGateway):
                 "instrument": {"id": "mt5:EURUSD", "symbol": "EURUSD", "exchange": "MT5"},
                 "period": "60min",
                 "adjustment": "none",
+                "barAggregation": "original",
                 "limit": 10,
             },
         )
@@ -116,6 +117,7 @@ def test_bars_daily_aligned_resamples_from_h1(fake_gateway: FakeGateway):
                 "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
                 "period": "daily",
                 "adjustment": "none",
+                "barAggregation": "aligned",
                 "limit": 10,
             },
         )
@@ -133,6 +135,7 @@ def test_bars_rejects_unsupported_period_and_adjustment(client: TestClient):
         "sourceId": "mt5",
         "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
         "adjustment": "none",
+        "barAggregation": "original",
         "limit": 10,
     }
     resp_period = client.post(
@@ -160,6 +163,7 @@ def test_bars_before_timestamp_pagination(fake_gateway: FakeGateway):
                 "instrument": {"id": "mt5:EURUSD", "symbol": "EURUSD", "exchange": "MT5"},
                 "period": "60min",
                 "adjustment": "none",
+                "barAggregation": "original",
                 "limit": 2,
                 "beforeTimestamp": _ms(datetime(2026, 8, 11, 6, 0, tzinfo=UTC)),
             },
@@ -201,7 +205,7 @@ async def _first_sse_chunk(app):
         "scheme": "http",
         "path": "/api/v1/market-data/sources/mt5/stream",
         "raw_path": b"/api/v1/market-data/sources/mt5/stream",
-        "query_string": b"symbol=XAUUSD&period=60min",
+        "query_string": b"symbol=XAUUSD&period=60min&barAggregation=original",
         "root_path": "",
         "server": ("test", 80),
         "client": ("test", 1234),
@@ -246,7 +250,8 @@ async def _first_sse_chunk(app):
 
 def test_stream_rejects_unsupported_period(client: TestClient):
     resp = client.get(
-        "/api/v1/market-data/sources/mt5/stream", params={"symbol": "XAUUSD", "period": "yearly"}
+        "/api/v1/market-data/sources/mt5/stream",
+        params={"symbol": "XAUUSD", "period": "yearly", "barAggregation": "original"},
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"

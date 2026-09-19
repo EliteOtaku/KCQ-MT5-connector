@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from . import align
 from .aggregator import Aggregator
+from .bar_aggregation import ALIGNED_BAR_AGGREGATION, BarAggregation
 from .clock import ServerClock
 from .config import Settings
 from .frames import Bar, frame_payload
@@ -95,6 +96,7 @@ class BarRequest(BaseModel):
     adjustment: str = "none"
     limit: int = Field(default=300, ge=1, le=MAX_BAR_LIMIT)
     beforeTimestamp: int | None = None
+    barAggregation: BarAggregation
 
 
 # ── probe ──
@@ -229,7 +231,9 @@ async def fetch_bars(body: BarRequest, request: Request):
     try:
         offset = await clock.ensure_fresh()
         asset_class = guess_asset_class(body.instrument.symbol)
-        aligned = _alignment_enabled(settings, gateway)
+        if body.barAggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(settings, gateway):
+            return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
+        aligned = body.barAggregation == ALIGNED_BAR_AGGREGATION
         bars = await _load_series(
             gateway, body, asset_class, aligned, offset, settings.align_mode
         )
@@ -242,6 +246,7 @@ async def fetch_bars(body: BarRequest, request: Request):
             "instrumentId": body.instrument.id,
             "period": body.period,
             "adjustment": body.adjustment,
+            "barAggregation": body.barAggregation,
             "timezone": "UTC",
             "items": [
                 {
@@ -323,8 +328,13 @@ async def _load_series(
 
 
 @router.get("/sources/mt5/stream")
-async def stream(symbol: str, period: str, request: Request):
-    """单连接固定订阅一个 (symbol, period)；切品种 = 断开重连。
+async def stream(
+    symbol: str,
+    period: str,
+    request: Request,
+    barAggregation: BarAggregation,
+):
+    """单连接固定订阅一个 (symbol, period, barAggregation)；切换任一维度均断开重连。
 
     断线重连凭 Last-Event-ID 从环形缓冲补帧；无 ID 视为新订阅（下发快照）。
     """
@@ -334,10 +344,14 @@ async def stream(symbol: str, period: str, request: Request):
     if not symbol.strip():
         return _error("INVALID_REQUEST", "symbol is required", 400)
 
+    gateway: Mt5Gateway = state.gateway
+    if barAggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(state.settings, gateway):
+        return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
+
     hub: StreamHub = state.hub
     aggregator: Aggregator = state.aggregator
     settings: Settings = state.settings
-    key = (symbol.strip().upper(), period)
+    key = (symbol.strip().upper(), period, barAggregation)
 
     last_id_raw = request.headers.get("last-event-id")
     last_id = int(last_id_raw) if last_id_raw and last_id_raw.isdigit() else None

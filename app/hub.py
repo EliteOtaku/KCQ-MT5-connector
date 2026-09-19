@@ -9,8 +9,8 @@ from dataclasses import dataclass
 
 from .frames import Frame
 
-# 流身份：(symbol, period)
-StreamKey = tuple[str, str]
+# 流身份：(symbol, period, barAggregation)。不同聚合边界不可共用帧序号或环形缓冲。
+StreamKey = tuple[str, str, str]
 
 
 @dataclass(frozen=True, slots=True)
