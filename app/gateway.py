@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
-from .frames import Bar
+from .frames import Bar, Tick
 
 # Exness 平台已知安装路径（未显式指定终端时按序探测）
 EXNESS_TERMINAL_PATHS = (
@@ -266,6 +266,21 @@ class Mt5Gateway:
         )
         return _rates_to_bars(rates)
 
+    async def copy_ticks_from(
+        self, symbol: str, from_server_seconds: int, count: int
+    ) -> list[Tick]:
+        """拉取自指定服务器时间（秒）起的逐笔 tick（升序、不超过 count）；返回服务器时间 Tick。"""
+        mt5 = self._mt5
+        if mt5 is None:
+            raise RuntimeError(self._init_error or "MT5 gateway 未初始化")
+        flags = getattr(mt5, "COPY_TICKS_ALL", 0)
+        loop = asyncio.get_running_loop()
+        ticks = await loop.run_in_executor(
+            self._executor,
+            lambda: mt5.copy_ticks_from(symbol, int(from_server_seconds), int(count), flags),
+        )
+        return _ticks_to_ticks(ticks)
+
 
 def _rates_to_bars(rates) -> list[Bar]:
     """MT5 rates 结构数组 → Bar 列表（时间秒→毫秒，volume 取 tick_volume）。"""
@@ -281,4 +296,20 @@ def _rates_to_bars(rates) -> list[Bar]:
             volume=float(row["tick_volume"]),
         )
         for row in rates
+    ]
+
+
+def _ticks_to_ticks(ticks) -> list[Tick]:
+    """MT5 tick 结构数组 → Tick 列表（time_msc 为服务器毫秒）。"""
+    if ticks is None or len(ticks) == 0:
+        return []
+    return [
+        Tick(
+            time_ms=int(row["time_msc"]),
+            bid=float(row["bid"]),
+            ask=float(row["ask"]),
+            last=float(row["last"]),
+            volume=float(row["volume"]),
+        )
+        for row in ticks
     ]

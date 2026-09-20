@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.gateway import SymbolMeta, TickProbe
 from app.main import create_app
-from app.frames import Bar
+from app.frames import Bar, Tick
 
 
 class FakeGateway:
@@ -24,6 +24,8 @@ class FakeGateway:
         ]
         # (symbol, period) → 升序服务器时间 Bar 列表；copy_rates_from_pos 取尾部 count 根
         self.rates: dict[tuple[str, str], list[Bar]] = {}
+        # symbol → 升序服务器时间逐笔 Tick 列表；copy_ticks_from 按起始秒过滤
+        self.ticks: dict[str, list[Tick]] = {}
         self.tick_offset_seconds = tick_offset_seconds
         self.connected = True
 
@@ -80,6 +82,15 @@ class FakeGateway:
         if series is None:
             return []
         return [bar for bar in series if from_server_ms <= bar.time_ms <= to_server_ms]
+
+    async def copy_ticks_from(
+        self, symbol: str, from_server_seconds: int, count: int
+    ) -> list[Tick]:
+        if not self.connected:
+            return []
+        series = self.ticks.get(symbol, [])
+        matched = [tick for tick in series if tick.time_ms // 1000 >= from_server_seconds]
+        return matched[:count]
 
 
 @pytest.fixture

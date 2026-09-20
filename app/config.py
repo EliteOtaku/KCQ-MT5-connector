@@ -45,6 +45,12 @@ class Settings:
     snapshot_bars: int = 2
     # 服务器偏移复测间隔（秒）
     clock_recheck_seconds: float = 300.0
+    # 逐笔 tick 轮询间隔（秒）
+    tick_poll_seconds: float = 0.25
+    # 单次增量拉取的 tick 上限
+    tick_pull_max: int = 5000
+    # tick 去重窗口（最近 N 笔；覆盖 copy_ticks_from 秒级取整造成的重复）
+    tick_seen_window: int = 8192
 
 
 def load_settings(env: dict[str, str] | None = None) -> Settings:
@@ -66,10 +72,26 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     except ValueError:
         port = 8090
 
+    try:
+        tick_poll = float(source.get("MT5_TICK_POLL_SECONDS", "0.25"))
+    except ValueError:
+        tick_poll = 0.25
+    if tick_poll <= 0:
+        tick_poll = 0.25
+
+    try:
+        tick_pull_max = int(source.get("MT5_TICK_PULL_MAX", "5000"))
+    except ValueError:
+        tick_pull_max = 5000
+    if tick_pull_max <= 0:
+        tick_pull_max = 5000
+
     return Settings(
         port=port,
         terminal_path=source.get("MT5_TERMINAL_PATH", "").strip() or None,
         exness_only=_parse_bool(source.get("EXNESS_ONLY"), True),
         align_mode=align_raw,
         server_utc_offset_override=offset_override,
+        tick_poll_seconds=tick_poll,
+        tick_pull_max=tick_pull_max,
     )

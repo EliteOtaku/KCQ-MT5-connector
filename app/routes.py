@@ -22,6 +22,7 @@ from .frames import Bar, frame_payload
 from .gateway import Mt5Gateway
 from .hub import RingEntry, StreamHub
 from .symbols import ASSET_CLASSES, guess_asset_class, search_symbols
+from .ticks import TickAggregator, tick_stream_key
 
 SOURCE_ID = "mt5"
 SUPPORTED_PERIODS = ("1min", "5min", "15min", "30min", "60min", "4h", "daily", "weekly", "monthly")
@@ -366,6 +367,60 @@ async def stream(
         finally:
             hub.unregister(key, queue)
             aggregator.release(key)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+
+@router.get("/sources/mt5/ticks/stream")
+async def ticks_stream(symbol: str, request: Request):
+    """单连接固定订阅一个 symbol 的逐笔 tick 流；tick 与 period / barAggregation 无关。
+
+    新订阅只推送建立之后的 tick；断线重连凭 Last-Event-ID 从环形缓冲补帧。
+    """
+    state = request.app.state
+    if not symbol.strip():
+        return _error("INVALID_REQUEST", "symbol is required", 400)
+
+    hub: StreamHub = state.hub
+    tick_aggregator: TickAggregator = state.tick_aggregator
+    settings: Settings = state.settings
+    normalized = symbol.strip().upper()
+    key = tick_stream_key(normalized)
+
+    last_id_raw = request.headers.get("last-event-id")
+    last_id = int(last_id_raw) if last_id_raw and last_id_raw.isdigit() else None
+
+    queue = hub.register(key)
+    # 新订阅从当前位置开始（tick 无历史快照）；重连凭 Last-Event-ID 补帧
+    base_seq = last_id if last_id is not None else hub.last_seq(key)
+    tick_aggregator.ensure(normalized)
+
+    async def event_stream():
+        try:
+            last_sent = base_seq
+            for entry in hub.replay(key, last_sent):
+                last_sent = entry.seq
+                yield _sse_chunk(entry)
+            while True:
+                try:
+                    entry = await asyncio.wait_for(
+                        queue.get(), timeout=settings.sse_keepalive_seconds
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if entry.seq <= last_sent:
+                    continue  # 重放与队列重叠去重
+                last_sent = entry.seq
+                yield _sse_chunk(entry)
+        finally:
+            hub.unregister(key, queue)
+            tick_aggregator.release(normalized)
 
     headers = {
         "Cache-Control": "no-cache",

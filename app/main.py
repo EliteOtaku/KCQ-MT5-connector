@@ -16,6 +16,7 @@ from .config import Settings, load_settings
 from .gateway import Mt5Gateway
 from .hub import StreamHub
 from .routes import router
+from .ticks import TickAggregator
 
 logger = logging.getLogger("mt5.app")
 
@@ -30,6 +31,7 @@ def create_app(
     clock = ServerClock(resolved_gateway, resolved, resolved.clock_recheck_seconds)
     hub = StreamHub(resolved.ring_buffer_frames)
     aggregator = Aggregator(resolved_gateway, clock, hub, resolved)
+    tick_aggregator = TickAggregator(resolved_gateway, clock, hub, resolved)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -49,6 +51,7 @@ def create_app(
         finally:
             stop.set()
             aggregator.stop_all()
+            tick_aggregator.stop_all()
             for task in tasks:
                 task.cancel()
             await resolved_gateway.shutdown()
@@ -63,6 +66,7 @@ def create_app(
     app.state.clock = clock
     app.state.hub = hub
     app.state.aggregator = aggregator
+    app.state.tick_aggregator = tick_aggregator
     app.include_router(router)
     return app
 
