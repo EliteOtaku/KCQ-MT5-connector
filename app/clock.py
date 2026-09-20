@@ -1,5 +1,5 @@
 # 服务器时间轴偏移实测：MT5 时间戳是"服务器墙钟按 UTC epoch 解释"的伪 UTC，
-# 必须实测偏移才能换算真 UTC。优先探测 7x24 加密品种（外汇周末 tick 停更）。
+# 必须实测偏移才能换算真 UTC。优先探测 7x24 加密品种（外汇周末报价 tick 停更）。
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 
-# 偏移探测品种优先级：加密优先（周末也有 tick），外汇/金属兜底
+# 偏移探测品种优先级：加密优先（周末也有报价 tick），外汇/金属兜底
 PROBE_SYMBOLS = ("BTCUSD", "ETHUSD", "EURUSD", "XAUUSD")
 
 
@@ -19,15 +19,15 @@ class OffsetSample:
     ok: bool
 
 
-def measure_offset_minutes(last_tick_server_seconds: float | None) -> OffsetSample:
-    """由最后 tick 服务器时间推算服务器领先 UTC 的整小时偏移。
+def measure_offset_minutes(last_quote_tick_server_seconds: float | None) -> OffsetSample:
+    """由最后报价 tick 服务器时间推算服务器领先 UTC 的整小时偏移。
 
     本机时钟与服务器时钟差取整到小时后模 24h 归一到 [-12h, +12h)，
-    消除周末停市期间累积的天数偏移。tick 缺失时返回 ok=False。
+    消除周末停市期间累积的天数偏移。报价 tick 缺失时返回 ok=False。
     """
-    if last_tick_server_seconds is None or last_tick_server_seconds <= 0:
+    if last_quote_tick_server_seconds is None or last_quote_tick_server_seconds <= 0:
         return OffsetSample(0, False)
-    delta_hours = round((time.time() - float(last_tick_server_seconds)) / 3600.0)
+    delta_hours = round((time.time() - float(last_quote_tick_server_seconds)) / 3600.0)
     normalized = (delta_hours + 12) % 24 - 12
     return OffsetSample(int(normalized) * 60, True)
 
@@ -51,9 +51,9 @@ class ServerClock:
             return self._offset_minutes
 
         for symbol in PROBE_SYMBOLS:
-            tick = await self._gateway.symbol_info_tick(symbol)
-            server_seconds = tick.time_seconds if tick is not None else 0
-            sample = measure_offset_minutes(server_seconds or None)
+            quote_tick = await self._gateway.symbol_info_tick(symbol)
+            quote_tick_server_seconds = quote_tick.time_seconds if quote_tick is not None else 0
+            sample = measure_offset_minutes(quote_tick_server_seconds or None)
             if sample.ok:
                 self._offset_minutes = sample.offset_minutes
                 self._last_refresh = time.monotonic()

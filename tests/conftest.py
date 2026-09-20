@@ -8,15 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.gateway import SymbolMeta, TickProbe
+from app.gateway import SymbolMeta, QuoteTickProbe
 from app.main import create_app
 from app.frames import Bar, Tick
 
 
 class FakeGateway:
-    """内存版 MT5 网关：可配置品种目录、K 线序列与 tick 时间偏移。"""
+    """内存版 MT5 网关：可配置品种目录、K 线序列与报价 tick 时间偏移。"""
 
-    def __init__(self, tick_offset_seconds: float = 0.0):
+    def __init__(self, quote_tick_offset_seconds: float = 0.0):
         self.symbols_data: list[SymbolMeta] = [
             SymbolMeta("XAUUSD", "Gold vs US Dollar", "USD", 0.01, 0.01),
             SymbolMeta("BTCUSD", "Bitcoin vs US Dollar", "USD", 0.01, 0.01),
@@ -26,7 +26,7 @@ class FakeGateway:
         self.rates: dict[tuple[str, str], list[Bar]] = {}
         # symbol → 升序服务器时间逐笔 Tick 列表；copy_ticks_from 按起始秒过滤
         self.ticks: dict[str, list[Tick]] = {}
-        self.tick_offset_seconds = tick_offset_seconds
+        self.quote_tick_offset_seconds = quote_tick_offset_seconds
         self.connected = True
 
     # ── 生命周期 ──
@@ -60,11 +60,11 @@ class FakeGateway:
     async def symbols(self) -> list[SymbolMeta]:
         return list(self.symbols_data)
 
-    async def symbol_info_tick(self, symbol: str) -> TickProbe | None:
+    async def symbol_info_tick(self, symbol: str) -> QuoteTickProbe | None:
         if not self.connected:
             return None
-        return TickProbe(
-            time_seconds=time_module.time() - self.tick_offset_seconds,
+        return QuoteTickProbe(
+            time_seconds=time_module.time() - self.quote_tick_offset_seconds,
             bid=1.0,
             ask=1.0,
         )

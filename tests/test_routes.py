@@ -79,8 +79,8 @@ def test_search_rejects_unknown_asset_class(client: TestClient):
 
 
 def test_bars_native_period_applies_measured_offset(fake_gateway: FakeGateway):
-    # 服务器领先 UTC 2h：tick 时间 = now-2h → 实测偏移 +120min
-    fake_gateway.tick_offset_seconds = 7200
+    # 服务器领先 UTC 2h：报价 tick 时间 = now-2h → 实测偏移 +120min
+    fake_gateway.quote_tick_offset_seconds = 7200
     start = datetime(2026, 8, 17, 0, 0, tzinfo=UTC)
     fake_gateway.rates[("EURUSD", "60min")] = _h1(start, 5)
     app = create_app(settings=Settings(), gateway=fake_gateway)

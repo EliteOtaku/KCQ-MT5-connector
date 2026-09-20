@@ -29,7 +29,7 @@ class Settings:
     align_mode: str = "on"
     # 服务器 UTC 偏移覆盖（小时）；缺省走实测
     server_utc_offset_override: int | None = None
-    # 活跃订阅轮询基线（秒）：tick 探针间隔
+    # 活跃订阅轮询基线（秒）：报价探针间隔
     active_poll_seconds: float = 1.0
     # 无观察者后的残留轮询基线（秒）
     background_poll_seconds: float = 5.0

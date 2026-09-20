@@ -48,8 +48,8 @@ class SymbolMeta:
 
 
 @dataclass(frozen=True, slots=True)
-class TickProbe:
-    """轻量 tick 探针结果（聚合轮询用）。"""
+class QuoteTickProbe:
+    """轻量报价探针结果（聚合轮询用）。"""
 
     time_seconds: float
     bid: float
@@ -216,8 +216,8 @@ class Mt5Gateway:
         self._symbol_cache = None
         self._symbol_cache_at = 0.0
 
-    async def symbol_info_tick(self, symbol: str) -> TickProbe | None:
-        """读取品种最后 tick（轮询探针/偏移实测共用）。"""
+    async def symbol_info_tick(self, symbol: str) -> QuoteTickProbe | None:
+        """读取品种最后报价 tick（轮询探针/偏移实测共用）。"""
         mt5 = self._mt5
         if mt5 is None:
             return None
@@ -225,7 +225,7 @@ class Mt5Gateway:
         tick = await loop.run_in_executor(self._executor, lambda: mt5.symbol_info_tick(symbol))
         if tick is None or not getattr(tick, "time", 0):
             return None
-        return TickProbe(
+        return QuoteTickProbe(
             time_seconds=float(tick.time),
             bid=float(getattr(tick, "bid", 0.0) or 0.0),
             ask=float(getattr(tick, "ask", 0.0) or 0.0),
