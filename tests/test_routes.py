@@ -132,6 +132,47 @@ def test_bars_daily_aligned_resamples_on_utc_boundary(fake_gateway: FakeGateway)
     assert items[0]["volume"] == 24 * 100
 
 
+def test_bars_europe_traditional_merges_sunday(client, fake_gateway: FakeGateway):
+    """europe-traditional：UTC 周日短棒并入下一根周一，回显口径字段。"""
+    sunday = datetime(2026, 3, 8, 0, 0, tzinfo=UTC)
+    monday = datetime(2026, 3, 9, 0, 0, tzinfo=UTC)
+    fake_gateway.rates[("XAUUSD", "daily")] = [
+        Bar(_ms(sunday), 10.0, 10.6, 9.8, 10.4, 5.0, 0.0),
+        Bar(_ms(monday), 10.5, 11.2, 10.2, 11.0, 300.0, 0.0),
+    ]
+
+    resp = client.post(
+        "/api/v1/market-data/bars",
+        json={
+            "sourceId": "mt5",
+            "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
+            "period": "daily",
+            "adjustment": "none",
+            "barAggregation": "europe-traditional",
+            "limit": 10,
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["barAggregation"] == "europe-traditional"
+    assert len(body["items"]) == 1
+    merged = body["items"][0]
+    assert merged["timestamp"] == _ms(monday)
+    assert merged["open"] == 10.0
+    assert merged["high"] == 11.2
+    assert merged["low"] == 9.8
+    assert merged["close"] == 11.0
+    assert merged["volume"] == 305.0
+
+
+def test_probe_capabilities_report_bar_aggregations(client: TestClient):
+    resp = client.get("/api/v1/market-data/sources/mt5/probe")
+
+    aggregations = resp.json()["data"]["capabilities"]["bars"]["barAggregations"]
+    assert aggregations == ["original", "aligned", "europe-traditional"]
+
+
 def test_bars_rejects_aligned_when_alignment_disabled(fake_gateway: FakeGateway):
     app = create_app(settings=Settings(align_mode="off"), gateway=fake_gateway)
     with TestClient(app) as off_client:

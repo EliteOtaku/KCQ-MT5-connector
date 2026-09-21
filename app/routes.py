@@ -15,7 +15,12 @@ from pydantic import BaseModel, Field
 
 from . import align
 from .aggregator import Aggregator
-from .bar_aggregation import ALIGNED_BAR_AGGREGATION, BarAggregation
+from .bar_aggregation import (
+    ALIGNED_BAR_AGGREGATION,
+    BarAggregation,
+    BAR_AGGREGATIONS,
+    EUROPE_TRADITIONAL_BAR_AGGREGATION,
+)
 from .clock import ServerClock
 from .config import Settings
 from .frames import Bar, frame_payload
@@ -148,7 +153,7 @@ async def probe(request: Request) -> dict:
             # capabilities 是前端 SourceRouter 的流转筛选依据，必须随 probe 上报
             "capabilities": {
                 "assetClasses": list(ASSET_CLASSES),
-                "bars": {"periods": list(SUPPORTED_PERIODS), "adjustments": list(SUPPORTED_ADJUSTMENTS)},
+                "bars": {"periods": list(SUPPORTED_PERIODS), "adjustments": list(SUPPORTED_ADJUSTMENTS), "barAggregations": list(BAR_AGGREGATIONS)},
                 # 实时 K 线能力：/stream 对全部已声明周期提供 SSE 推送，供前端精确判定，
                 # 不再用 marketTicks 等相邻能力推断
                 "liveBars": True,
@@ -227,6 +232,8 @@ async def fetch_bars(body: BarRequest, request: Request):
             return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
         aligned = body.barAggregation == ALIGNED_BAR_AGGREGATION
         bars = await _load_series(gateway, body, aligned, offset)
+        if body.barAggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION:
+            bars = align.merge_sunday_bars(bars)
     except Exception as exc:  # noqa: BLE001 — 终端/品种错误统一 502
         return _error("UPSTREAM_UNAVAILABLE", str(exc), 502)
 

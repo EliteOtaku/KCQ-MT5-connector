@@ -9,7 +9,7 @@ import logging
 import time
 
 from . import align
-from .bar_aggregation import ALIGNED_BAR_AGGREGATION
+from .bar_aggregation import ALIGNED_BAR_AGGREGATION, EUROPE_TRADITIONAL_BAR_AGGREGATION
 from .clock import ServerClock
 from .config import Settings
 from .frames import Bar, ClosedFrame, FormingFrame, Frame, SnapshotFrame, StatusFrame
@@ -196,6 +196,8 @@ class Aggregator:
                 else:
                     quiet = 0
                     bars = await self._fetch_tail(symbol, period, plan)
+                    if bar_aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION:
+                        bars = align.merge_sunday_bars(bars)
                     for frame in detector.sample(bars):
                         self._hub.publish(key, frame)
             except asyncio.CancelledError:
