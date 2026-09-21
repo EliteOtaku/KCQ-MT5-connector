@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import datetime
+
 from datetime import timezone
 
 import pandas as pd
@@ -90,3 +92,40 @@ def resample(bars: list[Bar], target: str, offset_minutes: int) -> list[Bar]:
         )
         for i, (_, row) in enumerate(grouped.iterrows())
     ]
+
+
+def merge_sunday_bars(bars: list[Bar]) -> list[Bar]:
+    """把 UTC 周日的日线短棒并入下一根周一（传统欧洲券商口径），其余序列原样。
+
+    Exness 服务器时间恰为 UTC 时，周开盘（周日 22:00 UTC）之后的 2 小时数据
+    会形成一根独立的周日日线（成交量仅为正常日线的约 5%），凭空占据一个 K 线位。
+    传统欧洲券商口径下这 2 小时并入周一日线。非周日 bar 与序列末尾的孤立周日 bar
+    保持原样；对不含周日 bar 的序列是 no-op。
+    """
+    if not bars:
+        return []
+    out: list[Bar] = []
+    i = 0
+    while i < len(bars):
+        bar = bars[i]
+        dt = datetime.datetime.fromtimestamp(bar.time_ms / 1000, tz=datetime.timezone.utc)
+        if dt.weekday() == 6 and i + 1 < len(bars):
+            nxt = bars[i + 1]
+            ndt = datetime.datetime.fromtimestamp(nxt.time_ms / 1000, tz=datetime.timezone.utc)
+            if ndt.weekday() == 0:
+                out.append(
+                    Bar(
+                        time_ms=nxt.time_ms,
+                        open=bar.open,
+                        high=max(bar.high, nxt.high),
+                        low=min(bar.low, nxt.low),
+                        close=nxt.close,
+                        volume=bar.volume + nxt.volume,
+                        turnover=bar.turnover + nxt.turnover,
+                    )
+                )
+                i += 2
+                continue
+        out.append(bar)
+        i += 1
+    return out
