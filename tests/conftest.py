@@ -8,15 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.gateway import SymbolMeta, TickProbe
+from app.gateway import SymbolMeta, QuoteTickProbe
 from app.main import create_app
-from app.frames import Bar
+from app.frames import Bar, Tick
 
 
 class FakeGateway:
-    """内存版 MT5 网关：可配置品种目录、K 线序列与 tick 时间偏移。"""
+    """内存版 MT5 网关：可配置品种目录、K 线序列与报价 tick 时间偏移。"""
 
-    def __init__(self, tick_offset_seconds: float = 0.0):
+    def __init__(self, quote_tick_offset_seconds: float = 0.0):
         self.symbols_data: list[SymbolMeta] = [
             SymbolMeta("XAUUSD", "Gold vs US Dollar", "USD", 0.01, 0.01),
             SymbolMeta("BTCUSD", "Bitcoin vs US Dollar", "USD", 0.01, 0.01),
@@ -24,8 +24,9 @@ class FakeGateway:
         ]
         # (symbol, period) → 升序服务器时间 Bar 列表；copy_rates_from_pos 取尾部 count 根
         self.rates: dict[tuple[str, str], list[Bar]] = {}
-        self.tick_offset_seconds = tick_offset_seconds
-        self.exness = True
+        # symbol → 升序服务器时间逐笔 Tick 列表；copy_ticks_from 按起始秒过滤
+        self.ticks: dict[str, list[Tick]] = {}
+        self.quote_tick_offset_seconds = quote_tick_offset_seconds
         self.connected = True
 
     # ── 生命周期 ──
@@ -47,26 +48,23 @@ class FakeGateway:
             raise RuntimeError("terminal not connected")
         return {
             "terminal": "FakeTerminal",
-            "company": "Exness" if self.exness else "Other",
+            "company": "FakeTerminal",
             "connected": True,
             "account": 123456,
-            "server": "Exness-MT5Trial" if self.exness else "Other-Server",
+            "server": "Fake-Server",
             "currency": "USD",
         }
-
-    def is_exness(self) -> bool:
-        return self.exness
 
     # ── 数据查询 ──
 
     async def symbols(self) -> list[SymbolMeta]:
         return list(self.symbols_data)
 
-    async def symbol_info_tick(self, symbol: str) -> TickProbe | None:
+    async def symbol_info_tick(self, symbol: str) -> QuoteTickProbe | None:
         if not self.connected:
             return None
-        return TickProbe(
-            time_seconds=time_module.time() - self.tick_offset_seconds,
+        return QuoteTickProbe(
+            time_seconds=time_module.time() - self.quote_tick_offset_seconds,
             bid=1.0,
             ask=1.0,
         )
@@ -85,6 +83,15 @@ class FakeGateway:
             return []
         return [bar for bar in series if from_server_ms <= bar.time_ms <= to_server_ms]
 
+    async def copy_ticks_from(
+        self, symbol: str, from_server_seconds: int, count: int
+    ) -> list[Tick]:
+        if not self.connected:
+            return []
+        series = self.ticks.get(symbol, [])
+        matched = [tick for tick in series if tick.time_ms // 1000 >= from_server_seconds]
+        return matched[:count]
+
 
 @pytest.fixture
 def fake_gateway() -> FakeGateway:
@@ -93,7 +100,7 @@ def fake_gateway() -> FakeGateway:
 
 @pytest.fixture
 def client(fake_gateway: FakeGateway) -> TestClient:
-    """默认 Exness + auto 对齐的测试应用。"""
+    """默认对齐开启（UTC）的测试应用。"""
     app = create_app(settings=Settings(), gateway=fake_gateway)
     with TestClient(app) as test_client:
         yield test_client

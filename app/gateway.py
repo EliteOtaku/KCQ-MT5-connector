@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings
-from .frames import Bar
+from .frames import Bar, Tick
 
 # Exness 平台已知安装路径（未显式指定终端时按序探测）
 EXNESS_TERMINAL_PATHS = (
@@ -48,8 +48,8 @@ class SymbolMeta:
 
 
 @dataclass(frozen=True, slots=True)
-class TickProbe:
-    """轻量 tick 探针结果（聚合轮询用）。"""
+class QuoteTickProbe:
+    """轻量报价探针结果（聚合轮询用）。"""
 
     time_seconds: float
     bid: float
@@ -105,7 +105,7 @@ class Mt5Gateway:
         return next((p for p in EXNESS_TERMINAL_PATHS if Path(p).exists()), None)
 
     def _terminal_summary_sync(self) -> dict:
-        """读取终端/账户摘要并刷新 Exness 判定；不发起重连。"""
+        """读取终端/账户摘要并刷新平台判定；不发起重连。"""
         mt5 = self._mt5
         ti = mt5.terminal_info() if mt5 is not None else None
         ai = mt5.account_info() if mt5 is not None else None
@@ -178,10 +178,6 @@ class Mt5Gateway:
             self._executor, self._terminal_summary_sync
         )
 
-    def is_exness(self) -> bool:
-        """最近一次终端摘要的 Exness 判定。"""
-        return self._is_exness
-
     @property
     def init_error(self) -> str | None:
         """最近一次初始化/重连失败原因。"""
@@ -220,8 +216,8 @@ class Mt5Gateway:
         self._symbol_cache = None
         self._symbol_cache_at = 0.0
 
-    async def symbol_info_tick(self, symbol: str) -> TickProbe | None:
-        """读取品种最后 tick（轮询探针/偏移实测共用）。"""
+    async def symbol_info_tick(self, symbol: str) -> QuoteTickProbe | None:
+        """读取品种最后报价 tick（轮询探针/偏移实测共用）。"""
         mt5 = self._mt5
         if mt5 is None:
             return None
@@ -229,7 +225,7 @@ class Mt5Gateway:
         tick = await loop.run_in_executor(self._executor, lambda: mt5.symbol_info_tick(symbol))
         if tick is None or not getattr(tick, "time", 0):
             return None
-        return TickProbe(
+        return QuoteTickProbe(
             time_seconds=float(tick.time),
             bid=float(getattr(tick, "bid", 0.0) or 0.0),
             ask=float(getattr(tick, "ask", 0.0) or 0.0),
@@ -270,6 +266,21 @@ class Mt5Gateway:
         )
         return _rates_to_bars(rates)
 
+    async def copy_ticks_from(
+        self, symbol: str, from_server_seconds: int, count: int
+    ) -> list[Tick]:
+        """拉取自指定服务器时间（秒）起的逐笔 tick（升序、不超过 count）；返回服务器时间 Tick。"""
+        mt5 = self._mt5
+        if mt5 is None:
+            raise RuntimeError(self._init_error or "MT5 gateway 未初始化")
+        flags = getattr(mt5, "COPY_TICKS_ALL", 0)
+        loop = asyncio.get_running_loop()
+        ticks = await loop.run_in_executor(
+            self._executor,
+            lambda: mt5.copy_ticks_from(symbol, int(from_server_seconds), int(count), flags),
+        )
+        return _ticks_to_ticks(ticks)
+
 
 def _rates_to_bars(rates) -> list[Bar]:
     """MT5 rates 结构数组 → Bar 列表（时间秒→毫秒，volume 取 tick_volume）。"""
@@ -285,4 +296,20 @@ def _rates_to_bars(rates) -> list[Bar]:
             volume=float(row["tick_volume"]),
         )
         for row in rates
+    ]
+
+
+def _ticks_to_ticks(ticks) -> list[Tick]:
+    """MT5 tick 结构数组 → Tick 列表（time_msc 为服务器毫秒）。"""
+    if ticks is None or len(ticks) == 0:
+        return []
+    return [
+        Tick(
+            time_ms=int(row["time_msc"]),
+            bid=float(row["bid"]),
+            ask=float(row["ask"]),
+            last=float(row["last"]),
+            volume=float(row["volume"]),
+        )
+        for row in ticks
     ]

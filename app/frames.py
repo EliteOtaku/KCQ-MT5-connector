@@ -55,8 +55,27 @@ class StatusFrame:
     detail: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class Tick:
+    """单笔逐笔 tick；time_ms 语义由调用方约定（网关返回=服务器伪 UTC，推送=真 UTC）。"""
+
+    time_ms: int
+    bid: float
+    ask: float
+    last: float
+    volume: float
+
+
+@dataclass(frozen=True, slots=True)
+class TicksFrame:
+    """一批逐笔 tick 推送（同一采样窗口内按时间升序合并，不丢中间 tick）。"""
+
+    symbol: str
+    ticks: tuple[Tick, ...]
+
+
 # 帧联合类型别名
-Frame = SnapshotFrame | FormingFrame | ClosedFrame | StatusFrame
+Frame = SnapshotFrame | FormingFrame | ClosedFrame | StatusFrame | TicksFrame
 
 
 def frame_type(frame: Frame) -> str:
@@ -70,6 +89,8 @@ def frame_type(frame: Frame) -> str:
             return "closed"
         case StatusFrame():
             return "status"
+        case TicksFrame():
+            return "ticks"
     raise TypeError(f"unknown frame: {frame!r}")
 
 
@@ -95,6 +116,12 @@ def frame_payload(frame: Frame) -> dict[str, object]:
                 "status": status,
                 "detail": detail,
             }
+        case TicksFrame(symbol, ticks):
+            return {
+                "type": "ticks",
+                "symbol": symbol,
+                "ticks": [tick_to_dict(tick) for tick in ticks],
+            }
     raise TypeError(f"unknown frame: {frame!r}")
 
 
@@ -108,4 +135,15 @@ def bar_to_dict(bar: Bar) -> dict[str, float | int]:
         "close": bar.close,
         "volume": bar.volume,
         "turnover": bar.turnover,
+    }
+
+
+def tick_to_dict(tick: Tick) -> dict[str, float | int]:
+    """Tick 转逐笔字典（timestamp 为真 UTC 毫秒）。"""
+    return {
+        "timestamp": tick.time_ms,
+        "bid": tick.bid,
+        "ask": tick.ask,
+        "last": tick.last,
+        "volume": tick.volume,
     }

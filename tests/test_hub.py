@@ -12,18 +12,32 @@ def _frame(detail: str = "x"):
 
 def test_publish_assigns_monotonic_seq_per_stream():
     hub = StreamHub()
-    key = ("XAUUSD", "4h")
+    key = ("XAUUSD", "4h", "original")
 
     assert hub.publish(key, _frame()) == 1
     assert hub.publish(key, _frame()) == 2
     # 不同流独立计数
-    assert hub.publish(("BTCUSD", "4h"), _frame()) == 1
+    assert hub.publish(("BTCUSD", "4h", "original"), _frame()) == 1
     assert hub.last_seq(key) == 2
+
+
+def test_aggregation_mode_separates_stream_identity():
+    hub = StreamHub()
+    key = ("XAUUSD", "4h", "original")
+    aligned_key = ("XAUUSD", "4h", "aligned")
+
+    hub.publish(aligned_key, _frame())
+    assert hub.publish(key, _frame()) == 1  # 不共用 seq
+    assert hub.replay(aligned_key, 0) and hub.replay(key, 0)
+
+    queue = hub.register(key)
+    hub.publish(aligned_key, _frame())
+    assert queue.qsize() == 0  # 不跨模式扇出
 
 
 def test_ring_buffer_caps_entries():
     hub = StreamHub(ring_size=3)
-    key = ("XAUUSD", "4h")
+    key = ("XAUUSD", "4h", "original")
     for i in range(5):
         hub.publish(key, _frame(str(i)))
 
@@ -34,7 +48,7 @@ def test_ring_buffer_caps_entries():
 
 def test_replay_after_last_event_id():
     hub = StreamHub(ring_size=10)
-    key = ("XAUUSD", "4h")
+    key = ("XAUUSD", "4h", "original")
     for _ in range(4):
         hub.publish(key, _frame())
 
@@ -44,7 +58,7 @@ def test_replay_after_last_event_id():
 
 def test_replay_from_current_position_returns_empty():
     hub = StreamHub()
-    key = ("XAUUSD", "4h")
+    key = ("XAUUSD", "4h", "original")
     hub.publish(key, _frame())
 
     assert hub.replay(key, None) == []
@@ -52,7 +66,7 @@ def test_replay_from_current_position_returns_empty():
 
 def test_subscriber_fanout_and_unregister():
     hub = StreamHub()
-    key = ("XAUUSD", "4h")
+    key = ("XAUUSD", "4h", "original")
     queue_a = hub.register(key)
     queue_b = hub.register(key)
 

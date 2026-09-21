@@ -15,12 +15,14 @@ from pydantic import BaseModel, Field
 
 from . import align
 from .aggregator import Aggregator
+from .bar_aggregation import ALIGNED_BAR_AGGREGATION, BarAggregation
 from .clock import ServerClock
 from .config import Settings
 from .frames import Bar, frame_payload
 from .gateway import Mt5Gateway
 from .hub import RingEntry, StreamHub
 from .symbols import ASSET_CLASSES, guess_asset_class, search_symbols
+from .ticks import TickAggregator, tick_stream_key
 
 SOURCE_ID = "mt5"
 SUPPORTED_PERIODS = ("1min", "5min", "15min", "30min", "60min", "4h", "daily", "weekly", "monthly")
@@ -55,14 +57,9 @@ def _error(code: str, message: str, status_code: int) -> JSONResponse:
     )
 
 
-def _alignment_enabled(settings: Settings, gateway: Mt5Gateway) -> bool:
-    """对齐开关（与 aggregator 同一规则）：off 关、auto 仅 Exness、gmt2/gmt3 强制。"""
-    mode = settings.align_mode
-    if mode == "off":
-        return False
-    if mode == "auto":
-        return gateway.is_exness()
-    return True
+def _alignment_enabled(settings: Settings) -> bool:
+    """对齐开关（与 aggregator 同一规则）：off 关，其余对齐到 UTC。"""
+    return settings.align_mode != "off"
 
 
 # ── 请求模型 ──
@@ -95,6 +92,7 @@ class BarRequest(BaseModel):
     adjustment: str = "none"
     limit: int = Field(default=300, ge=1, le=MAX_BAR_LIMIT)
     beforeTimestamp: int | None = None
+    barAggregation: BarAggregation
 
 
 # ── probe ──
@@ -118,14 +116,8 @@ async def probe(request: Request) -> dict:
         status = "offline"
         message = str(exc)
 
-    aligned = _alignment_enabled(settings, gateway) if status != "offline" else False
-    anchor_label = "Europe/Athens"
-    if settings.align_mode == "gmt2":
-        anchor_label = "GMT+2"
-    elif settings.align_mode == "gmt3":
-        anchor_label = "GMT+3"
-    elif settings.align_mode == "off":
-        anchor_label = "off"
+    aligned = _alignment_enabled(settings) if status != "offline" else False
+    anchor_label = "UTC"
 
     # 状态补充说明：离线时是诊断原因，在线时是对齐摘要（前端聚合源管理直接展示）
     if status == "offline":
@@ -157,6 +149,9 @@ async def probe(request: Request) -> dict:
             "capabilities": {
                 "assetClasses": list(ASSET_CLASSES),
                 "bars": {"periods": list(SUPPORTED_PERIODS), "adjustments": list(SUPPORTED_ADJUSTMENTS)},
+                # 实时 K 线能力：/stream 对全部已声明周期提供 SSE 推送，供前端精确判定，
+                # 不再用 marketTicks 等相邻能力推断
+                "liveBars": True,
             },
         }
     )
@@ -228,11 +223,10 @@ async def fetch_bars(body: BarRequest, request: Request):
 
     try:
         offset = await clock.ensure_fresh()
-        asset_class = guess_asset_class(body.instrument.symbol)
-        aligned = _alignment_enabled(settings, gateway)
-        bars = await _load_series(
-            gateway, body, asset_class, aligned, offset, settings.align_mode
-        )
+        if body.barAggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(settings):
+            return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
+        aligned = body.barAggregation == ALIGNED_BAR_AGGREGATION
+        bars = await _load_series(gateway, body, aligned, offset)
     except Exception as exc:  # noqa: BLE001 — 终端/品种错误统一 502
         return _error("UPSTREAM_UNAVAILABLE", str(exc), 502)
 
@@ -242,6 +236,7 @@ async def fetch_bars(body: BarRequest, request: Request):
             "instrumentId": body.instrument.id,
             "period": body.period,
             "adjustment": body.adjustment,
+            "barAggregation": body.barAggregation,
             "timezone": "UTC",
             "items": [
                 {
@@ -275,10 +270,8 @@ def _utc_bars(raw: list[Bar], offset_minutes: int) -> list[Bar]:
 async def _load_series(
     gateway: Mt5Gateway,
     body: BarRequest,
-    asset_class: str,
     aligned: bool,
     offset: int,
-    align_mode: str,
 ) -> list[Bar]:
     """按对齐方案与游标组装最终序列（升序、末位为最新，最多 limit 根）。"""
     period = body.period
@@ -292,7 +285,6 @@ async def _load_series(
     if needs_resample:
         source_period = "60min" if period in align.RESAMPLE_H1_TARGETS else "daily"
         source_ms = _PERIOD_SECONDS[source_period] * 1000
-        anchor = align.anchor_tz(asset_class, align_mode)
         if body.beforeTimestamp is not None:
             span_ms = limit * period_ms + RANGE_MARGIN_MS
             raw = await gateway.copy_rates_range(
@@ -304,7 +296,7 @@ async def _load_series(
         else:
             count = min(math.ceil(limit * period_ms / source_ms) + 48, 20_000)
             raw = await gateway.copy_rates_from_pos(symbol, source_period, count)
-        series = align.resample(raw, period, anchor, offset)
+        series = align.resample(raw, period, offset)
         if body.beforeTimestamp is not None:
             series = [bar for bar in series if bar.time_ms < body.beforeTimestamp]
     else:
@@ -323,8 +315,13 @@ async def _load_series(
 
 
 @router.get("/sources/mt5/stream")
-async def stream(symbol: str, period: str, request: Request):
-    """单连接固定订阅一个 (symbol, period)；切品种 = 断开重连。
+async def stream(
+    symbol: str,
+    period: str,
+    request: Request,
+    barAggregation: BarAggregation,
+):
+    """单连接固定订阅一个 (symbol, period, barAggregation)；切换任一维度均断开重连。
 
     断线重连凭 Last-Event-ID 从环形缓冲补帧；无 ID 视为新订阅（下发快照）。
     """
@@ -334,10 +331,14 @@ async def stream(symbol: str, period: str, request: Request):
     if not symbol.strip():
         return _error("INVALID_REQUEST", "symbol is required", 400)
 
+    if barAggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(state.settings):
+        return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
+
     hub: StreamHub = state.hub
     aggregator: Aggregator = state.aggregator
     settings: Settings = state.settings
-    key = (symbol.strip().upper(), period)
+    # MT5 品种名大小写敏感，直接使用请求的品种名，不做大小写归一
+    key = (symbol.strip(), period, barAggregation)
 
     last_id_raw = request.headers.get("last-event-id")
     last_id = int(last_id_raw) if last_id_raw and last_id_raw.isdigit() else None
@@ -370,6 +371,61 @@ async def stream(symbol: str, period: str, request: Request):
         finally:
             hub.unregister(key, queue)
             aggregator.release(key)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+
+@router.get("/sources/mt5/ticks/stream")
+async def ticks_stream(symbol: str, request: Request):
+    """单连接固定订阅一个 symbol 的逐笔 tick 流；tick 与 period / barAggregation 无关。
+
+    新订阅只推送建立之后的 tick；断线重连凭 Last-Event-ID 从环形缓冲补帧。
+    """
+    state = request.app.state
+    if not symbol.strip():
+        return _error("INVALID_REQUEST", "symbol is required", 400)
+
+    hub: StreamHub = state.hub
+    tick_aggregator: TickAggregator = state.tick_aggregator
+    settings: Settings = state.settings
+    # MT5 品种名大小写敏感，直接使用请求的品种名，不做大小写归一
+    normalized = symbol.strip()
+    key = tick_stream_key(normalized)
+
+    last_id_raw = request.headers.get("last-event-id")
+    last_id = int(last_id_raw) if last_id_raw and last_id_raw.isdigit() else None
+
+    queue = hub.register(key)
+    # 新订阅从当前位置开始（tick 无历史快照）；重连凭 Last-Event-ID 补帧
+    base_seq = last_id if last_id is not None else hub.last_seq(key)
+    tick_aggregator.ensure(normalized)
+
+    async def event_stream():
+        try:
+            last_sent = base_seq
+            for entry in hub.replay(key, last_sent):
+                last_sent = entry.seq
+                yield _sse_chunk(entry)
+            while True:
+                try:
+                    entry = await asyncio.wait_for(
+                        queue.get(), timeout=settings.sse_keepalive_seconds
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if entry.seq <= last_sent:
+                    continue  # 重放与队列重叠去重
+                last_sent = entry.seq
+                yield _sse_chunk(entry)
+        finally:
+            hub.unregister(key, queue)
+            tick_aggregator.release(normalized)
 
     headers = {
         "Cache-Control": "no-cache",

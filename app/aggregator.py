@@ -1,5 +1,5 @@
 # 聚合器：每 (symbol, period) 一条轮询任务。
-# 分级轮询：tick 探针先行、变化才取 K 线；无观察者降为后台档；静默退避指数增长封顶。
+# 分级轮询：报价探针先行、变化才取 K 线；无观察者降为后台档；静默退避指数增长封顶。
 # ChangeDetector 为纯函数类：openTime+OHLCV 内容去重、收线判定、终端缓存滞后容忍。
 
 from __future__ import annotations
@@ -9,12 +9,12 @@ import logging
 import time
 
 from . import align
+from .bar_aggregation import ALIGNED_BAR_AGGREGATION
 from .clock import ServerClock
 from .config import Settings
 from .frames import Bar, ClosedFrame, FormingFrame, Frame, SnapshotFrame, StatusFrame
 from .gateway import Mt5Gateway
 from .hub import StreamHub, StreamKey
-from .symbols import guess_asset_class
 
 logger = logging.getLogger("mt5.aggregator")
 
@@ -140,18 +140,16 @@ class Aggregator:
     # ── 轮询循环 ──
 
     async def _poll(self, key: StreamKey) -> None:
-        """单流轮询主循环：首采样出快照，之后 tick 探针驱动 + 静默退避。"""
-        symbol, period = key
+        """单流轮询主循环：首采样出快照，之后报价探针驱动 + 静默退避。"""
+        symbol, period, bar_aggregation = key
         detector = ChangeDetector(symbol, period)
-        asset_class = guess_asset_class(symbol)
-        align_enabled = self._align_enabled()
+        align_enabled = bar_aggregation == ALIGNED_BAR_AGGREGATION
         plan = _aligned_plan(period, align_enabled)
-        anchor = align.anchor_tz(asset_class, self._settings.align_mode) if align_enabled else None
         wake = asyncio.Event()
         self._wake[key] = wake
         quiet = 0
         first_sample = True
-        last_tick: float | None = None
+        last_quote_tick: float | None = None
         market_open: bool | None = None
         next_interval = 0.0  # 首轮立即采样，让订阅尽快拿到快照
 
@@ -178,24 +176,26 @@ class Aggregator:
 
                 first_sample_done = first_sample
                 first_sample = False
-                tick = await self._gateway.symbol_info_tick(symbol)
-                tick_changed = tick is not None and tick.time_seconds != last_tick
-                if tick is not None:
-                    last_tick = tick.time_seconds
+                quote_tick = await self._gateway.symbol_info_tick(symbol)
+                quote_tick_changed = (
+                    quote_tick is not None and quote_tick.time_seconds != last_quote_tick
+                )
+                if quote_tick is not None:
+                    last_quote_tick = quote_tick.time_seconds
 
-                # 状态帧：tick 新鲜度判开闭，变化才发
-                open_now = self._judge_market_open(tick, period)
+                # 状态帧：报价新鲜度判开闭，变化才发
+                open_now = self._judge_market_open(quote_tick, period)
                 if open_now is not market_open:
                     market_open = open_now
                     if open_now is not None:
                         status = "open" if open_now else "closed"
                         self._hub.publish(key, StatusFrame(symbol, period, status))
 
-                if not first_sample_done and not woken and not tick_changed:
+                if not first_sample_done and not woken and not quote_tick_changed:
                     quiet += 1
                 else:
                     quiet = 0
-                    bars = await self._fetch_tail(symbol, period, plan, anchor)
+                    bars = await self._fetch_tail(symbol, period, plan)
                     for frame in detector.sample(bars):
                         self._hub.publish(key, frame)
             except asyncio.CancelledError:
@@ -210,15 +210,6 @@ class Aggregator:
         self._background_until.pop(key, None)
         self._wake.pop(key, None)
 
-    def _align_enabled(self) -> bool:
-        """对齐开关：off 关闭；auto 仅 Exness 开启；gmt2/gmt3 强制开启。"""
-        mode = self._settings.align_mode
-        if mode == "off":
-            return False
-        if mode == "auto":
-            return self._gateway.is_exness()
-        return True
-
     def _current_interval(self, key: StreamKey, quiet: int) -> float:
         """当前轮询间隔：活跃/后台基线 × 静默指数退避，封顶 quiet_backoff_cap。"""
         base = (
@@ -229,25 +220,25 @@ class Aggregator:
         scaled = base * (2 ** min(quiet, 8))
         return min(scaled, self._settings.quiet_backoff_cap_seconds)
 
-    def _judge_market_open(self, tick, period: str) -> bool | None:
-        """按最后 tick 年龄判定行情开闭；无 tick 无法判定。"""
-        if tick is None:
+    def _judge_market_open(self, quote_tick, period: str) -> bool | None:
+        """按最后报价 tick 年龄判定行情开闭；无报价 tick 无法判定。"""
+        if quote_tick is None:
             return None
         period_seconds = _PERIOD_SECONDS.get(period, 3600)
         max_age = max(period_seconds * 2, 900)
-        return (time.time() - tick.time_seconds) <= max_age
+        return (time.time() - quote_tick.time_seconds) <= max_age
 
-    async def _fetch_tail(self, symbol: str, period: str, plan: str, anchor) -> list[Bar]:
+    async def _fetch_tail(self, symbol: str, period: str, plan: str) -> list[Bar]:
         """按方案拉取尾部序列并统一为真 UTC Bar（升序）。"""
         offset = await self._clock.ensure_fresh()
         if plan == "h1":
             count = _H1_FETCH_COUNTS[period]
             raw = await self._gateway.copy_rates_from_pos(symbol, "60min", count)
-            aligned = align.resample(raw, period, anchor, offset)
+            aligned = align.resample(raw, period, offset)
         elif plan == "d1":
             count = _D1_FETCH_COUNTS[period]
             raw = await self._gateway.copy_rates_from_pos(symbol, "daily", count)
-            aligned = align.resample(raw, period, anchor, offset)
+            aligned = align.resample(raw, period, offset)
         else:
             raw = await self._gateway.copy_rates_from_pos(symbol, period, self._settings.snapshot_bars)
             aligned = [

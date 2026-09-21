@@ -12,8 +12,8 @@ context: |
   Domain:
   - MetaTrader5 Python 包只能 IPC 读本机已登录终端（Windows），无推送回调，只能轮询。
   - MT5 时间戳是「服务器墙钟按 UTC epoch 解释」的伪 UTC，必须实测服务器偏移转真 UTC。
-  - Exness 高周期 K 线锚 Europe/Athens（EET/EEST 自动 DST）；加密品种锚 UTC（币安标准）；
-    周日短棒在重采样中自然并入周一首根，禁止剔除。
+  - 高周期 K 线对齐锚恒为 UTC（4h 边界 {00,04,08,12,16,20}，日线边界 UTC 00:00），
+    不随券商平台或品种类别变化；周日短棒在重采样中自然并入周一首根，禁止剔除。
 
   Conventions:
   - 注释正文用中文，技术用语保留英文；每个模块/函数有职责注释。
