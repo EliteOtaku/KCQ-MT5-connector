@@ -20,6 +20,7 @@ from .bar_aggregation import (
     BarAggregation,
     BAR_AGGREGATIONS,
     EUROPE_TRADITIONAL_BAR_AGGREGATION,
+    ORIGINAL_BAR_AGGREGATION,
 )
 from .clock import ServerClock
 from .config import Settings
@@ -97,7 +98,7 @@ class BarRequest(BaseModel):
     adjustment: str = "none"
     limit: int = Field(default=300, ge=1, le=MAX_BAR_LIMIT)
     beforeTimestamp: int | None = None
-    barAggregation: BarAggregation
+    barAggregation: BarAggregation | None = None
 
 
 # ── probe ──
@@ -150,6 +151,12 @@ async def probe(request: Request) -> dict:
                 "serverOffsetMinutes": clock.offset_minutes() if status != "offline" else None,
                 "offsetMeasured": clock.is_measured() if status != "offline" else False,
             },
+            # 品牌默认口径：Exness 终端默认修正周日短棒，下游不传 barAggregation 即得修正后序列
+            "defaultBarAggregation": (
+                EUROPE_TRADITIONAL_BAR_AGGREGATION
+                if getattr(gateway, "is_exness", False)
+                else ORIGINAL_BAR_AGGREGATION
+            ),
             # capabilities 是前端 SourceRouter 的流转筛选依据，必须随 probe 上报
             "capabilities": {
                 "assetClasses": list(ASSET_CLASSES),
@@ -228,11 +235,12 @@ async def fetch_bars(body: BarRequest, request: Request):
 
     try:
         offset = await clock.ensure_fresh()
-        if body.barAggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(settings):
+        aggregation = _resolve_aggregation(gateway, body.barAggregation)
+        if aggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(settings):
             return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
-        aligned = body.barAggregation == ALIGNED_BAR_AGGREGATION
+        aligned = aggregation == ALIGNED_BAR_AGGREGATION
         bars = await _load_series(gateway, body, aligned, offset)
-        if body.barAggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION:
+        if aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION:
             bars = align.merge_sunday_bars(bars)
     except Exception as exc:  # noqa: BLE001 — 终端/品种错误统一 502
         return _error("UPSTREAM_UNAVAILABLE", str(exc), 502)
@@ -243,7 +251,7 @@ async def fetch_bars(body: BarRequest, request: Request):
             "instrumentId": body.instrument.id,
             "period": body.period,
             "adjustment": body.adjustment,
-            "barAggregation": body.barAggregation,
+            "barAggregation": aggregation,
             "timezone": "UTC",
             "items": [
                 {
@@ -272,6 +280,17 @@ def _utc_bars(raw: list[Bar], offset_minutes: int) -> list[Bar]:
         )
         for bar in raw
     ]
+
+
+def _resolve_aggregation(gateway: Mt5Gateway, value: BarAggregation | None) -> BarAggregation:
+    """解析实际聚合口径：缺省时按品牌默认——Exness 默认 europe-traditional（底层修正周日短棒），其余 original。"""
+    if value is not None:
+        return value
+    return (
+        EUROPE_TRADITIONAL_BAR_AGGREGATION
+        if getattr(gateway, "is_exness", False)
+        else ORIGINAL_BAR_AGGREGATION
+    )
 
 
 async def _load_series(
@@ -326,7 +345,7 @@ async def stream(
     symbol: str,
     period: str,
     request: Request,
-    barAggregation: BarAggregation,
+    barAggregation: BarAggregation | None = None,
 ):
     """单连接固定订阅一个 (symbol, period, barAggregation)；切换任一维度均断开重连。
 
@@ -338,14 +357,15 @@ async def stream(
     if not symbol.strip():
         return _error("INVALID_REQUEST", "symbol is required", 400)
 
-    if barAggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(state.settings):
+    bar_aggregation = _resolve_aggregation(state.gateway, barAggregation)
+    if bar_aggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(state.settings):
         return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
 
     hub: StreamHub = state.hub
     aggregator: Aggregator = state.aggregator
     settings: Settings = state.settings
     # MT5 品种名大小写敏感，直接使用请求的品种名，不做大小写归一
-    key = (symbol.strip(), period, barAggregation)
+    key = (symbol.strip(), period, bar_aggregation)
 
     last_id_raw = request.headers.get("last-event-id")
     last_id = int(last_id_raw) if last_id_raw and last_id_raw.isdigit() else None

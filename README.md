@@ -17,6 +17,8 @@ FastAPI（app/routes.py）
 
 - **实时链路**：连接器单采样循环轮询 MT5 → SSE 单连接推帧。无 WebSocket、无浏览器轮询。
 - **时区对齐**：日内（1m-1h）原生序列仅做服务器偏移校正；4h/日线自 H1、周/月自 D1 按 UTC 自然边界重采样，周日短棒自然并入周一首根。锚恒为 UTC，不随券商平台或品种类别变化。
+- **Exness 周日短棒自动修正**：Exness 终端的服务器时间与 UTC 重合，周开盘（周日 22:00 UTC）会形成一根独立的周日日线短棒（成交量仅为正常日线约 5%），凭空占据 K 线位并扭曲 MA/RSI/ATR 等窗口指标。连接器检测到 Exness 终端时，**缺省口径自动为 `europe-traditional`**——把这根短棒并入下一根周一（传统欧洲券商口径），K 线图表与历史数据入库拿到的即是无短棒序列。
+- **三种聚合口径**：`europe-traditional`（Exness 缺省，上述修正）/ `original`（MT5 原生边界透传，**需要 Exness 原始未修正数据时显式传此值**）/ `aligned`（UTC 边界重采样，`ALIGN_UTC=off` 时不可用）。请求缺省 `barAggregation` 时按上述品牌规则取默认；非 Exness 终端缺省 `original`。
 - **服务器偏移**：MT5 时间戳是"服务器墙钟按 UTC epoch 解释"的伪 UTC，连接器用最后 tick 时间实测偏移（模 24h 归一 ±12h），`EXNESS_SERVER_UTC_OFFSET` 可覆盖。
 
 规范文档见 [openspec/](openspec/)（OpenSpec 规格：REST 协议 / SSE 流 / 对齐 / 终端网关 / 品种目录）。
