@@ -333,3 +333,210 @@ def test_stream_rejects_unsupported_period(client: TestClient):
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+
+
+def test_bars_default_aggregation_follows_brand(fake_gateway: FakeGateway):
+    """缺省 barAggregation 按品牌解析：Exness 默认修正口径，非 Exness 默认原生；显式传值覆盖默认。"""
+    sunday = datetime(2026, 3, 8, 0, 0, tzinfo=UTC)
+    monday = datetime(2026, 3, 9, 0, 0, tzinfo=UTC)
+    fake_gateway.rates[("XAUUSD", "daily")] = [
+        Bar(_ms(sunday), 10.0, 10.6, 9.8, 10.4, 5.0, 0.0),
+        Bar(_ms(monday), 10.5, 11.2, 10.2, 11.0, 300.0, 0.0),
+    ]
+
+    def _request(**extra):
+        payload = {
+            "sourceId": "mt5",
+            "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
+            "period": "daily",
+            "adjustment": "none",
+            "limit": 10,
+        }
+        payload.update(extra)
+        return payload
+
+    # Exness 品牌：缺省 → europe-traditional，周日短棒并入周一
+    with TestClient(create_app(settings=Settings(), gateway=fake_gateway)) as c:
+        resp = c.post("/api/v1/market-data/bars", json=_request())
+    assert resp.json()["data"]["barAggregation"] == "europe-traditional"
+    assert len(resp.json()["data"]["items"]) == 1
+    assert resp.json()["data"]["items"][0]["close"] == 11.0
+
+    # 非 Exness 品牌：缺省 → original，周日 bar 保留
+    fake_gateway.is_exness = False
+    with TestClient(create_app(settings=Settings(), gateway=fake_gateway)) as c:
+        resp = c.post("/api/v1/market-data/bars", json=_request())
+    body = resp.json()["data"]
+    assert body["barAggregation"] == "original"
+    assert len(body["items"]) == 2
+
+    # 显式传值覆盖品牌默认：Exness 下显式 original 拿原生序列
+    fake_gateway.is_exness = True
+    with TestClient(create_app(settings=Settings(), gateway=fake_gateway)) as c:
+        resp = c.post("/api/v1/market-data/bars", json=_request(barAggregation="original"))
+    assert resp.json()["data"]["barAggregation"] == "original"
+    assert len(resp.json()["data"]["items"]) == 2
+
+
+def test_bars_rejects_aligned_when_alignment_disabled(fake_gateway: FakeGateway):
+    app = create_app(settings=Settings(align_mode="off"), gateway=fake_gateway)
+    with TestClient(app) as off_client:
+        resp = off_client.post(
+            "/api/v1/market-data/bars",
+            json={
+                "sourceId": "mt5",
+                "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
+                "period": "daily",
+                "adjustment": "none",
+                "barAggregation": "aligned",
+                "limit": 10,
+            },
+        )
+        probe = off_client.get("/api/v1/market-data/sources/mt5/probe")
+
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+    assert probe.json()["data"]["alignment"]["anchor"] == "off"
+
+
+def test_bars_rejects_unsupported_period_and_adjustment(client: TestClient):
+    base = {
+        "sourceId": "mt5",
+        "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
+        "adjustment": "none",
+        "barAggregation": "original",
+        "limit": 10,
+    }
+    resp_period = client.post(
+        "/api/v1/market-data/bars", json={**base, "period": "quarterly"}
+    )
+    assert resp_period.status_code == 400
+    assert resp_period.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+
+    resp_adj = client.post(
+        "/api/v1/market-data/bars", json={**base, "period": "daily", "adjustment": "qfq"}
+    )
+    assert resp_adj.status_code == 400
+    assert resp_adj.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+
+
+def test_bars_before_timestamp_pagination(fake_gateway: FakeGateway):
+    start = datetime(2026, 8, 10, 0, 0, tzinfo=UTC)
+    fake_gateway.rates[("EURUSD", "60min")] = _h1(start, 48)
+    app = create_app(settings=Settings(align_mode="off"), gateway=fake_gateway)
+    with TestClient(app) as page_client:
+        resp = page_client.post(
+            "/api/v1/market-data/bars",
+            json={
+                "sourceId": "mt5",
+                "instrument": {"id": "mt5:EURUSD", "symbol": "EURUSD", "exchange": "MT5"},
+                "period": "60min",
+                "adjustment": "none",
+                "barAggregation": "original",
+                "limit": 2,
+                "beforeTimestamp": _ms(datetime(2026, 8, 11, 6, 0, tzinfo=UTC)),
+            },
+        )
+
+    assert resp.status_code == 200
+    items = resp.json()["data"]["items"]
+    # 排他上界：最后一根 open < 8/11 06:00，取 2 根
+    assert [item["timestamp"] for item in items] == [
+        _ms(datetime(2026, 8, 11, 4, 0, tzinfo=UTC)),
+        _ms(datetime(2026, 8, 11, 5, 0, tzinfo=UTC)),
+    ]
+
+
+def test_stream_emits_snapshot_frame(fake_gateway: FakeGateway):
+    start = datetime(2026, 8, 17, 0, 0, tzinfo=UTC)
+    fake_gateway.rates[("XAUUSD", "60min")] = _h1(start, 5)
+    app = create_app(settings=Settings(), gateway=fake_gateway)
+    start_msg, body = asyncio.run(_first_sse_chunk(app))
+
+    headers = {k.decode().lower(): v.decode() for k, v in start_msg["headers"]}
+    assert headers["x-accel-buffering"] == "no"
+    assert headers["content-type"].startswith("text/event-stream")
+    first_line, data_line = body.split("\n")[:2]
+    assert first_line.startswith("id: ")
+    payload = json.loads(data_line[len("data: "):])
+    assert payload["type"] == "snapshot"
+    assert payload["symbol"] == "XAUUSD"
+    assert len(payload["bars"]) == 2  # 快照含收线 + forming 尾部两根
+
+
+def test_stream_preserves_symbol_case(fake_gateway: FakeGateway):
+    # MT5 品种名大小写敏感：请求的品种名必须原样交给网关，大小写归一取不到数据
+    start = datetime(2026, 8, 17, 0, 0, tzinfo=UTC)
+    fake_gateway.rates[("XAUUSDm", "60min")] = _h1(start, 5)
+    app = create_app(settings=Settings(), gateway=fake_gateway)
+    _, body = asyncio.run(_first_sse_chunk(app, symbol="XAUUSDm"))
+
+    first_line, data_line = body.split("\n")[:2]
+    assert first_line.startswith("id: ")
+    payload = json.loads(data_line[len("data: "):])
+    assert payload["type"] == "snapshot"
+    assert payload["symbol"] == "XAUUSDm"
+
+
+async def _first_sse_chunk(app, symbol: str = "XAUUSD"):
+    """裸 ASGI 调用消费 SSE 首个数据块后取消连接（TestClient/ASGITransport 不支持无限流）。"""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/api/v1/market-data/sources/mt5/stream",
+        "raw_path": b"/api/v1/market-data/sources/mt5/stream",
+        "query_string": f"symbol={symbol}&period=60min&barAggregation=original".encode(),
+        "root_path": "",
+        "server": ("test", 80),
+        "client": ("test", 1234),
+        "headers": [(b"host", b"test")],
+    }
+
+    async def receive():
+        # 真实服务器中 receive 会挂起直到断连；立即返回会让
+        # listen_for_disconnect 忙转饿死事件循环（无挂起点）。
+        await asyncio.Event().wait()
+        return {"type": "http.disconnect"}
+
+    events: list[dict] = []
+    first_body = asyncio.Event()
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            events.append(message)
+        elif message["type"] == "http.response.body" and message.get("body"):
+            events.append(message)
+            text = message["body"].decode()
+            # 状态帧可能先于快照发出，读到 snapshot 数据行为止
+            if '"type": "snapshot"' in text or '"type":"snapshot"' in text:
+                first_body.set()
+
+    async with app.router.lifespan_context(app):
+        task = asyncio.create_task(app(scope, receive, send))
+        await asyncio.wait_for(first_body.wait(), timeout=5)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    start_msg = next(m for m in events if m["type"] == "http.response.start")
+    snapshot_msg = next(
+        m
+        for m in events
+        if m["type"] == "http.response.body" and b"snapshot" in m.get("body", b"")
+    )
+    return start_msg, snapshot_msg["body"].decode()
+
+
+def test_stream_rejects_unsupported_period(client: TestClient):
+    resp = client.get(
+        "/api/v1/market-data/sources/mt5/stream",
+        params={"symbol": "XAUUSD", "period": "yearly", "barAggregation": "original"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"
+
+

@@ -41,6 +41,9 @@ KCQ-NexusAI 的 core 行情层。
 - MT5 时间戳是伪 UTC（服务器墙钟），出网关前必须经实测偏移转真 UTC。
 - 周日短棒不剔除：日内原生保留；4h/日/周/月经 UTC 边界重采样自然并入周一首根。
 - 对齐锚恒为 UTC（4h 边界 {00,04,08,12,16,20}，日线 UTC 00:00）；`ALIGN_UTC=off` 关闭对齐走原生边界。
+- Exness 检测（company/server 判定）→ 缺省 `barAggregation` 默认 `europe-traditional`：UTC 周日的
+  日线短棒并入下一根周一（成交量仅为正常日线约 5% 的开盘噪声，不并入会扭曲窗口指标）；
+  非 Exness 缺省 `original`；显式传值总是覆盖默认。
 
 ## Committing
 

@@ -28,6 +28,7 @@ class FakeGateway:
         self.ticks: dict[str, list[Tick]] = {}
         self.quote_tick_offset_seconds = quote_tick_offset_seconds
         self.connected = True
+        self.is_exness = True
 
     # ── 生命周期 ──
 

@@ -170,6 +170,11 @@ class Mt5Gateway:
         ti = await loop.run_in_executor(self._executor, mt5.terminal_info)
         return bool(ti is not None and getattr(ti, "connected", False))
 
+    @property
+    def is_exness(self) -> bool:
+        """当前终端是否为 Exness（initialize 时按 company/server 判定）。"""
+        return self._is_exness
+
     async def terminal_summary(self) -> dict:
         """读取终端摘要（probe 端点用）；句柄缺失时抛错。"""
         if self._mt5 is None:
