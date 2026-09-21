@@ -218,7 +218,21 @@ def test_stream_emits_snapshot_frame(fake_gateway: FakeGateway):
     assert len(payload["bars"]) == 2  # 快照含收线 + forming 尾部两根
 
 
-async def _first_sse_chunk(app):
+def test_stream_preserves_symbol_case(fake_gateway: FakeGateway):
+    # MT5 品种名大小写敏感：请求的品种名必须原样交给网关，大小写归一取不到数据
+    start = datetime(2026, 8, 17, 0, 0, tzinfo=UTC)
+    fake_gateway.rates[("XAUUSDm", "60min")] = _h1(start, 5)
+    app = create_app(settings=Settings(), gateway=fake_gateway)
+    _, body = asyncio.run(_first_sse_chunk(app, symbol="XAUUSDm"))
+
+    first_line, data_line = body.split("\n")[:2]
+    assert first_line.startswith("id: ")
+    payload = json.loads(data_line[len("data: "):])
+    assert payload["type"] == "snapshot"
+    assert payload["symbol"] == "XAUUSDm"
+
+
+async def _first_sse_chunk(app, symbol: str = "XAUUSD"):
     """裸 ASGI 调用消费 SSE 首个数据块后取消连接（TestClient/ASGITransport 不支持无限流）。"""
     scope = {
         "type": "http",
@@ -228,7 +242,7 @@ async def _first_sse_chunk(app):
         "scheme": "http",
         "path": "/api/v1/market-data/sources/mt5/stream",
         "raw_path": b"/api/v1/market-data/sources/mt5/stream",
-        "query_string": b"symbol=XAUUSD&period=60min&barAggregation=original",
+        "query_string": f"symbol={symbol}&period=60min&barAggregation=original".encode(),
         "root_path": "",
         "server": ("test", 80),
         "client": ("test", 1234),

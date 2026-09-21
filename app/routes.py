@@ -337,7 +337,8 @@ async def stream(
     hub: StreamHub = state.hub
     aggregator: Aggregator = state.aggregator
     settings: Settings = state.settings
-    key = (symbol.strip().upper(), period, barAggregation)
+    # MT5 品种名大小写敏感，直接使用请求的品种名，不做大小写归一
+    key = (symbol.strip(), period, barAggregation)
 
     last_id_raw = request.headers.get("last-event-id")
     last_id = int(last_id_raw) if last_id_raw and last_id_raw.isdigit() else None
@@ -392,7 +393,8 @@ async def ticks_stream(symbol: str, request: Request):
     hub: StreamHub = state.hub
     tick_aggregator: TickAggregator = state.tick_aggregator
     settings: Settings = state.settings
-    normalized = symbol.strip().upper()
+    # MT5 品种名大小写敏感，直接使用请求的品种名，不做大小写归一
+    normalized = symbol.strip()
     key = tick_stream_key(normalized)
 
     last_id_raw = request.headers.get("last-event-id")

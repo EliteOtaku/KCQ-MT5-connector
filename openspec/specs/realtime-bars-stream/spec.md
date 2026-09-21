@@ -20,6 +20,11 @@ symbol 为空时返回 400 INVALID_REQUEST。响应 SHALL 携带
 - **WHEN** 不带 Last-Event-ID 的连接建立
 - **THEN** 聚合器触发 resnapshot，订阅者收到尾部两根的 `snapshot` 帧（含最后一根收线与当前 forming）
 
+#### Scenario: 品种名按原样透传
+
+- **WHEN** 订阅请求携带含大小写的品种名
+- **THEN** 系统按原样向 MT5 查询该品种，不得做大小写归一（MT5 品种名大小写敏感）
+
 ### Requirement: 帧协议四类型
 
 帧载荷 SHALL 为 JSON 对象，`type` 字段取值：
