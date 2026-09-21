@@ -149,6 +149,9 @@ async def probe(request: Request) -> dict:
             "capabilities": {
                 "assetClasses": list(ASSET_CLASSES),
                 "bars": {"periods": list(SUPPORTED_PERIODS), "adjustments": list(SUPPORTED_ADJUSTMENTS)},
+                # 实时 K 线能力：/stream 对全部已声明周期提供 SSE 推送，供前端精确判定，
+                # 不再用 marketTicks 等相邻能力推断
+                "liveBars": True,
             },
         }
     )

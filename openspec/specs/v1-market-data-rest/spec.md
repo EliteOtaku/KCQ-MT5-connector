@@ -14,7 +14,7 @@
 系统 SHALL 提供 `GET /api/v1/market-data/sources/mt5/probe`，返回
 `status`（online/degraded/offline）、`checkedAt`、`latencyMs`，以及
 `alignment`（enabled/anchor/serverOffsetMinutes/offsetMeasured）和 `capabilities`
-（assetClasses + bars periods/adjustments）。探测失败 SHALL 返回 200 + offline，
+（assetClasses + bars periods/adjustments + liveBars 实时 K 线能力）。探测失败 SHALL 返回 200 + offline，
 而非 5xx——前端依赖 probe 判定可达性。
 
 #### Scenario: 终端在线
@@ -22,6 +22,7 @@
 - **WHEN** MT5 终端已连接
 - **THEN** 响应 `data.status` 为 `online`，`alignment.enabled` 按 `ALIGN_UTC` 开关给出、`alignment.anchor` 为 `UTC` 或 `off`
 - **THEN** `capabilities.bars.periods` 覆盖 1min/5min/15min/30min/60min/4h/daily/weekly/monthly
+- **THEN** `capabilities.liveBars` 为 true，声明 `/stream` 实时 K 线流对所有已声明周期可用
 
 #### Scenario: 终端离线
 

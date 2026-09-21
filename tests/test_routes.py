@@ -35,6 +35,7 @@ def test_probe_reports_online_with_alignment(client: TestClient):
     assert body["data"]["alignment"]["enabled"] is True  # 默认对齐开启（UTC）
     assert body["data"]["alignment"]["anchor"] == "UTC"
     assert body["data"]["capabilities"]["bars"]["periods"][0] == "1min"
+    assert body["data"]["capabilities"]["liveBars"] is True
     assert "requestId" in body
 
 
