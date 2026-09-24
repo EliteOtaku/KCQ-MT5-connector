@@ -161,3 +161,58 @@ class TestMergeSundayBars:
             _daily(datetime(2026, 3, 15, 0, 0, tzinfo=UTC), 11.0, 12.0),  # 下周日
         ]
         assert merge_sunday_bars(bars) == bars
+
+
+class TestNyClose4hResample:
+    """europe-traditional 4h：NY-close 锚（纽约 17:00 日界，跟随美国 DST）。
+
+    主流经纪商服务器时间 GMT+2/+3（New York close）→ 4h 桶 UTC 边界：
+    冬令时 {22,02,06,10,14,18}、夏令时 {21,01,05,09,13,17}。
+    """
+
+    def test_winter_boundaries_est(self):
+        # 2026-01-05（周一，EST）：服务器伪 UTC 序列，NY 日界 = 17:00 EST = 22:00 UTC
+        bars = _h1(datetime(2026, 1, 5, 22, 0, tzinfo=UTC), 8)
+        out = resample(bars, "4h", 0, anchor="ny_close")
+        assert [b.time_ms for b in out] == [
+            _ms(datetime(2026, 1, 5, 22, 0, tzinfo=UTC)),
+            _ms(datetime(2026, 1, 6, 2, 0, tzinfo=UTC)),
+        ]
+        assert all(b.volume == 400 for b in out)
+
+    def test_summer_boundaries_edt(self):
+        # 2026-08-03（周一，EDT）：NY 日界 = 17:00 EDT = 21:00 UTC
+        bars = _h1(datetime(2026, 8, 3, 21, 0, tzinfo=UTC), 8)
+        out = resample(bars, "4h", 0, anchor="ny_close")
+        assert [b.time_ms for b in out] == [
+            _ms(datetime(2026, 8, 3, 21, 0, tzinfo=UTC)),
+            _ms(datetime(2026, 8, 4, 1, 0, tzinfo=UTC)),
+        ]
+
+    def test_sunday_open_folds_into_first_slot(self):
+        # 周日 22:00 开市（EST）：首 4h 桶 = NY 周日 17:00（UTC 22:00），
+        # 开市前 2 小时无数据不产生独立周日棒——周日短棒天然并入首个交易槽
+        bars = _h1(datetime(2026, 1, 4, 22, 0, tzinfo=UTC), 6)  # 周日 22:00 → 周一 03:00
+        out = resample(bars, "4h", 0, anchor="ny_close")
+        assert [b.time_ms for b in out][0] == _ms(datetime(2026, 1, 4, 22, 0, tzinfo=UTC))
+        # 桶覆盖 22:00→04:00 的 6 根 H1 分两桶，无独立"周日短棒"
+        assert [b.volume for b in out] == [400, 200]
+
+    def test_samples_before_anchor_belong_to_previous_day(self):
+        # 日界后跨午夜的样本（UTC 01:00 = EST 20:00）仍属前一交易日 22:00 UTC 锚桶
+        bars = _h1(datetime(2026, 1, 6, 1, 0, tzinfo=UTC), 1)  # 仅 UTC 01:00
+        out = resample(bars, "4h", 0, anchor="ny_close")
+        assert [b.time_ms for b in out] == [_ms(datetime(2026, 1, 5, 22, 0, tzinfo=UTC))]
+
+    def test_dst_transition_sanity(self):
+        # 2026-11-01 美国夏令时结束（EDT→EST）：切换日不崩溃，切换后恢复 EST 边界
+        bars = _h1(datetime(2026, 11, 1, 0, 0, tzinfo=UTC), 24)
+        out = resample(bars, "4h", 0, anchor="ny_close")
+        assert len(out) >= 5
+        assert all(b.volume > 0 for b in out)
+
+    def test_ny_close_rejects_non_4h_target(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            resample(_h1(datetime(2026, 1, 5, 22, 0, tzinfo=UTC), 30), "daily", 0, anchor="ny_close")

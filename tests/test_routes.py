@@ -540,3 +540,59 @@ def test_stream_rejects_unsupported_period(client: TestClient):
     assert resp.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"
 
 
+
+
+def test_bars_europe_traditional_4h_resamples_on_ny_close_boundary(client, fake_gateway: FakeGateway):
+    """europe-traditional 4h：自 H1 按 NY-close 日界（EST 22:00 UTC）聚合，非 UTC 0/4 边界。"""
+    # 冬令时（1 月）：NY 日界 17:00 EST = 22:00 UTC；从 22:00 UTC 起 7 根 H1 跨两个 4h 桶
+    start = datetime(2026, 1, 5, 22, 0, tzinfo=UTC)
+    fake_gateway.rates[("XAUUSD", "60min")] = _h1(start, 7)
+
+    resp = client.post(
+        "/api/v1/market-data/bars",
+        json={
+            "sourceId": "mt5",
+            "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
+            "period": "4h",
+            "adjustment": "none",
+            "barAggregation": "europe-traditional",
+            "limit": 10,
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["barAggregation"] == "europe-traditional"
+    assert [item["timestamp"] for item in body["items"]] == [
+        _ms(datetime(2026, 1, 5, 22, 0, tzinfo=UTC)),
+        _ms(datetime(2026, 1, 6, 2, 0, tzinfo=UTC)),
+    ]
+    # 首桶含 22:00/23:00/00:00/01:00 四根 H1；次桶 02:00 起当前 3 根
+    assert body["items"][0]["volume"] == 400
+    assert body["items"][1]["volume"] == 300
+
+
+def test_bars_europe_traditional_intraday_keeps_sunday_bars(client, fake_gateway: FakeGateway):
+    """europe-traditional 日内周期（60min）：周日/周一交界棒保留原样，不做日线式合并。"""
+    fake_gateway.rates[("XAUUSD", "60min")] = [
+        Bar(_ms(datetime(2026, 3, 8, 23, 0, tzinfo=UTC)), 10.0, 10.5, 9.9, 10.2, 30.0, 0.0),
+        Bar(_ms(datetime(2026, 3, 9, 0, 0, tzinfo=UTC)), 10.2, 10.8, 10.1, 10.6, 200.0, 0.0),
+    ]
+
+    resp = client.post(
+        "/api/v1/market-data/bars",
+        json={
+            "sourceId": "mt5",
+            "instrument": {"id": "mt5:XAUUSD", "symbol": "XAUUSD", "exchange": "MT5"},
+            "period": "60min",
+            "adjustment": "none",
+            "barAggregation": "europe-traditional",
+            "limit": 10,
+        },
+    )
+
+    assert resp.status_code == 200
+    items = resp.json()["data"]["items"]
+    assert len(items) == 2
+    assert items[0]["timestamp"] == _ms(datetime(2026, 3, 8, 23, 0, tzinfo=UTC))
+    assert items[1]["timestamp"] == _ms(datetime(2026, 3, 9, 0, 0, tzinfo=UTC))

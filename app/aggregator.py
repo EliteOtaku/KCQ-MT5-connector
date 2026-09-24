@@ -144,7 +144,14 @@ class Aggregator:
         symbol, period, bar_aggregation = key
         detector = ChangeDetector(symbol, period)
         align_enabled = bar_aggregation == ALIGNED_BAR_AGGREGATION
-        plan = _aligned_plan(period, align_enabled)
+        # europe-traditional 4h 与 aligned 同走 H1 重采样，但用 NY-close 日界
+        # （对齐主流经纪商 4h 收线时间）；merge_sunday_bars 仅适用于日线。
+        ny_close_4h = (
+            bar_aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION and period == "4h"
+        )
+        plan = "h1" if ny_close_4h else _aligned_plan(period, align_enabled)
+        anchor = "ny_close" if ny_close_4h else "utc"
+        merge_sunday = bar_aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION and period == "daily"
         wake = asyncio.Event()
         self._wake[key] = wake
         quiet = 0
@@ -195,8 +202,8 @@ class Aggregator:
                     quiet += 1
                 else:
                     quiet = 0
-                    bars = await self._fetch_tail(symbol, period, plan)
-                    if bar_aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION:
+                    bars = await self._fetch_tail(symbol, period, plan, anchor=anchor)
+                    if merge_sunday:
                         bars = align.merge_sunday_bars(bars)
                     for frame in detector.sample(bars):
                         self._hub.publish(key, frame)
@@ -230,17 +237,17 @@ class Aggregator:
         max_age = max(period_seconds * 2, 900)
         return (time.time() - quote_tick.time_seconds) <= max_age
 
-    async def _fetch_tail(self, symbol: str, period: str, plan: str) -> list[Bar]:
-        """按方案拉取尾部序列并统一为真 UTC Bar（升序）。"""
+    async def _fetch_tail(self, symbol: str, period: str, plan: str, anchor: str = "utc") -> list[Bar]:
+        """按方案拉取尾部序列并统一为真 UTC Bar（升序）。anchor 传入 align.resample。"""
         offset = await self._clock.ensure_fresh()
         if plan == "h1":
             count = _H1_FETCH_COUNTS[period]
             raw = await self._gateway.copy_rates_from_pos(symbol, "60min", count)
-            aligned = align.resample(raw, period, offset)
+            aligned = align.resample(raw, period, offset, anchor=anchor)
         elif plan == "d1":
             count = _D1_FETCH_COUNTS[period]
             raw = await self._gateway.copy_rates_from_pos(symbol, "daily", count)
-            aligned = align.resample(raw, period, offset)
+            aligned = align.resample(raw, period, offset, anchor=anchor)
         else:
             raw = await self._gateway.copy_rates_from_pos(symbol, period, self._settings.snapshot_bars)
             aligned = [

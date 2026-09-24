@@ -1,13 +1,18 @@
-# 时区对齐纯函数：4h/日线自 H1、周/月自 D1 按 UTC 自然边界重采样（无 MT5 依赖，pytest 直接覆盖）。
+# 时区对齐纯函数：4h/日线自 H1、周/月自 D1 重采样（无 MT5 依赖，pytest 直接覆盖）。
 #
-# 锚规则（对齐决策）：锚恒为 UTC，不随品种类别或环境配置变化。
-# 券商服务器时区是发布渠道的私有约定，属于需要换算掉的噪声，不是对齐目标。
+# 锚规则（对齐决策）：
+# - aligned 口径锚恒为 UTC，不随品种类别或环境配置变化。
+#   券商服务器时区是发布渠道的私有约定，属于需要换算掉的噪声，不是对齐目标。
+# - europe-traditional 口径的 4h 使用 NY-close 锚（纽约 17:00 为日界，跟随美国 DST），
+#   与主流外汇经纪商（GMT+2/+3 New York close 服务器时间）的 4h 边界对齐；
+#   日级仍为「UTC 日线透传 + 周日短棒并入周一」（merge_sunday_bars）。
 
 from __future__ import annotations
 
 import datetime
 
 from datetime import timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -16,6 +21,11 @@ from .frames import Bar
 # 支持对齐重采样的目标周期：4h/日线取自 H1，周/月取自 D1
 RESAMPLE_H1_TARGETS = frozenset({"4h", "daily"})
 RESAMPLE_D1_TARGETS = frozenset({"weekly", "monthly"})
+
+# NY-close 锚当前支持的目标周期（日界 = 纽约 17:00，跟随美国夏令时）
+RESAMPLE_NY_CLOSE_TARGETS = frozenset({"4h"})
+
+_NY_TZ = ZoneInfo("America/New_York")
 
 
 def server_to_utc_ms(server_ms: int, offset_minutes: int) -> int:
@@ -41,13 +51,41 @@ def _bin_starts(index_utc: pd.DatetimeIndex, target: str) -> pd.DatetimeIndex:
     raise ValueError(f"unsupported resample target: {target!r}")
 
 
-def resample(bars: list[Bar], target: str, offset_minutes: int) -> list[Bar]:
+def _ny_close_bin_starts_4h(index_utc: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """NY-close 口径 4h 分桶：纽约 17:00 为日界，自日界起每 4 小时一桶。
+
+    全程 tz-aware 域运算（无 naive localize 歧义）：样本换算纽约墙钟判定日归属
+    （17:00 前属前一交易日），锚 + 槽序在绝对时间域计算。槽加法为墙钟语义——
+    DST 切换日的 UTC 桶宽自然突变 ±1h，与传统经纪商服务器墙钟行为一致。
+    """
+    ny = index_utc.tz_convert(_NY_TZ)
+    before_anchor = (ny.hour < 17).astype(int)
+    anchor = ny.normalize() + pd.Timedelta(hours=17) - pd.to_timedelta(before_anchor, unit="D")
+    slot = anchor + pd.to_timedelta(
+        ((ny - anchor) // pd.Timedelta(hours=4)).astype(int) * 4, unit="h"
+    )
+    return slot.tz_convert(timezone.utc).tz_localize(None)
+
+
+def resample(
+    bars: list[Bar], target: str, offset_minutes: int, anchor: str = "utc"
+) -> list[Bar]:
     """把服务器时间 H1/D1 序列重采样为 4h/daily/weekly/monthly，输出真 UTC Bar。
 
-    输入必须升序；输出时间戳为 UTC 桶边界毫秒，OHLCV 按桶聚合。
+    输入必须升序；输出时间戳为桶边界毫秒（naive UTC 墙钟），OHLCV 按桶聚合。
+    anchor="utc"（默认）按 UTC 自然边界；anchor="ny_close" 按纽约 17:00 日界
+    （仅 4h，europe-traditional 口径对齐主流经纪商 4h 收线时间）。
     """
     if not bars:
         return []
+    if anchor == "ny_close":
+        if target not in RESAMPLE_NY_CLOSE_TARGETS:
+            raise ValueError(f"ny_close anchor unsupported target: {target!r}")
+        bin_starts = _ny_close_bin_starts_4h
+    elif anchor == "utc":
+        bin_starts = lambda idx: _bin_starts(idx, target)  # noqa: E731 — 逐锚点分派
+    else:
+        raise ValueError(f"unsupported resample anchor: {anchor!r}")
 
     index_utc = pd.DatetimeIndex(
         pd.to_datetime(
@@ -66,7 +104,7 @@ def resample(bars: list[Bar], target: str, offset_minutes: int) -> list[Bar]:
         index=index_utc,
     ).sort_index()
 
-    grouped = frame.groupby(_bin_starts(index_utc, target)).agg(
+    grouped = frame.groupby(bin_starts(index_utc)).agg(
         open=("open", "first"),
         high=("high", "max"),
         low=("low", "min"),

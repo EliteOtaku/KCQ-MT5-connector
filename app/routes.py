@@ -238,10 +238,17 @@ async def fetch_bars(body: BarRequest, request: Request):
         aggregation = _resolve_aggregation(gateway, body.barAggregation)
         if aggregation == ALIGNED_BAR_AGGREGATION and not _alignment_enabled(settings):
             return _error("UNSUPPORTED_CAPABILITY", "aligned bar aggregation is unavailable", 400)
-        aligned = aggregation == ALIGNED_BAR_AGGREGATION
-        bars = await _load_series(gateway, body, aligned, offset)
-        if aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION:
-            bars = align.merge_sunday_bars(bars)
+        # europe-traditional：4h 自 H1 按 NY-close 日界聚合（对齐主流经纪商 4h 收线时间）；
+        # daily 保留「原生透传 + 周日短棒并入周一」；其余周期原生透传不修正。
+        # merge_sunday_bars 仅适用于日线序列——日内周期（1h/4h 等）周日/周一交界的
+        # 相邻棒并入会破坏时间轴，禁止无差别套用。
+        if aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION and body.period == "4h":
+            bars = await _load_series(gateway, body, "ny_close", offset)
+        else:
+            mode = "utc" if aggregation == ALIGNED_BAR_AGGREGATION else "none"
+            bars = await _load_series(gateway, body, mode, offset)
+            if aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION and body.period == "daily":
+                bars = align.merge_sunday_bars(bars)
     except Exception as exc:  # noqa: BLE001 — 终端/品种错误统一 502
         return _error("UPSTREAM_UNAVAILABLE", str(exc), 502)
 
@@ -296,16 +303,20 @@ def _resolve_aggregation(gateway: Mt5Gateway, value: BarAggregation | None) -> B
 async def _load_series(
     gateway: Mt5Gateway,
     body: BarRequest,
-    aligned: bool,
+    resample_mode: str,
     offset: int,
 ) -> list[Bar]:
-    """按对齐方案与游标组装最终序列（升序、末位为最新，最多 limit 根）。"""
+    """按重采样口径与游标组装最终序列（升序、末位为最新，最多 limit 根）。
+
+    resample_mode："none"（原生周期透传）/"utc"（aligned，UTC 自然边界）/
+    "ny_close"（europe-traditional 4h，纽约 17:00 日界自 H1 聚合）。
+    """
     period = body.period
     limit = body.limit
     period_ms = _PERIOD_SECONDS[period] * 1000
     symbol = body.instrument.providerRef.get("symbol", body.instrument.symbol) if body.instrument.providerRef else body.instrument.symbol
 
-    needs_resample = aligned and (
+    needs_resample = resample_mode != "none" and (
         period in align.RESAMPLE_H1_TARGETS or period in align.RESAMPLE_D1_TARGETS
     )
     if needs_resample:
@@ -322,7 +333,7 @@ async def _load_series(
         else:
             count = min(math.ceil(limit * period_ms / source_ms) + 48, 20_000)
             raw = await gateway.copy_rates_from_pos(symbol, source_period, count)
-        series = align.resample(raw, period, offset)
+        series = align.resample(raw, period, offset, anchor=resample_mode)
         if body.beforeTimestamp is not None:
             series = [bar for bar in series if bar.time_ms < body.beforeTimestamp]
     else:
