@@ -335,6 +335,75 @@ def test_stream_rejects_unsupported_period(client: TestClient):
     assert resp.json()["error"]["code"] == "UNSUPPORTED_CAPABILITY"
 
 
+def test_bars_weekend_gaps_do_not_trigger_exhausted(fake_gateway: FakeGateway):
+    """周末闭市洞使翻页窗口实际根数 < limit，不得误判 exhausted（TV 式深历史加载）。
+
+    复现 XAUUSD H1 线上问题：名义 1000 根窗口（span ≈ 41.7 天）内因周末闭市
+    （每周 ~49h）+ 每日 20-22 点缺口，实际只有 ~700 根；原判定
+    `len(bars) >= limit` 会把每页都标成 exhausted，前端左缘加载一页即停。
+    """
+    # 窗口起点 2026-07-02；循环在游标 2026-08-12 06:00 处停止生成（FakeGateway
+    # 会按 to_server_ms 截掉晚于游标的部分），共 ~702 根 —— 原判定下 702 < 1000 必误判
+    start = datetime(2026, 7, 2, 0, 0, tzinfo=UTC)
+    cursor_deadline = datetime(2026, 8, 12, 6, 0, tzinfo=UTC)
+    # 构造带周末洞的 H1：仅生成周一 00:00 至周六 00:00（模拟闭市缺口）
+    bars: list[Bar] = []
+    cursor = start
+    while cursor < cursor_deadline and len(bars) < 730:
+        if cursor.weekday() < 5:  # 周一至周五每小时一根
+            bars.append(Bar(_ms(cursor), 1.0, 2.0, 0.5, 1.5, 100, 0.0))
+        cursor += timedelta(hours=1)
+    generated = len(bars)
+    fake_gateway.rates[("EURUSD", "60min")] = bars
+    app = create_app(settings=Settings(align_mode="off"), gateway=fake_gateway)
+    with TestClient(app) as page_client:
+        resp = page_client.post(
+            "/api/v1/market-data/bars",
+            json={
+                "sourceId": "mt5",
+                "instrument": {"id": "mt5:EURUSD", "symbol": "EURUSD", "exchange": "MT5"},
+                "period": "60min",
+                "adjustment": "none",
+                "barAggregation": "original",
+                "limit": 1000,
+                "beforeTimestamp": _ms(datetime(2026, 8, 12, 6, 0, tzinfo=UTC)),
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert len(body["items"]) == generated
+    # 覆盖占比 ~67% > 0.5 阈值：周末洞是市场休市而非历史见底 → available
+    assert body["olderData"] == "available"
+
+
+def test_bars_sparse_history_still_exhausted(fake_gateway: FakeGateway):
+    """窗口覆盖占比 <= 阈值（数据真的稀疏/见底）时维持 exhausted 语义。"""
+    # 100 根紧贴游标左侧（窗口内），覆盖占比 ~9.5%（< 0.5）——历史确实见底
+    start = datetime(2026, 8, 1, 0, 0, tzinfo=UTC)
+    fake_gateway.rates[("EURUSD", "60min")] = _h1(start, 100)
+    app = create_app(settings=Settings(align_mode="off"), gateway=fake_gateway)
+    with TestClient(app) as page_client:
+        resp = page_client.post(
+            "/api/v1/market-data/bars",
+            json={
+                "sourceId": "mt5",
+                "instrument": {"id": "mt5:EURUSD", "symbol": "EURUSD", "exchange": "MT5"},
+                "period": "60min",
+                "adjustment": "none",
+                "barAggregation": "original",
+                "limit": 1000,
+                "beforeTimestamp": _ms(datetime(2026, 8, 12, 6, 0, tzinfo=UTC)),
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert len(body["items"]) == 100
+    # 100 根只覆盖 ~4 天，占名义窗口（1048h）约 0.4% → exhausted
+    assert body["olderData"] == "exhausted"
+
+
 def test_bars_default_aggregation_follows_brand(fake_gateway: FakeGateway):
     """缺省 barAggregation 按品牌解析：Exness 默认修正口径，非 Exness 默认原生；显式传值覆盖默认。"""
     sunday = datetime(2026, 3, 8, 0, 0, tzinfo=UTC)

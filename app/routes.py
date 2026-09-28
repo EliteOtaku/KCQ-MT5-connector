@@ -36,6 +36,10 @@ SUPPORTED_ADJUSTMENTS = ("none",)
 MAX_BAR_LIMIT = 1000
 # 请求窗口在服务器时间轴上的前置余量（毫秒）：覆盖周末缺口与重采样桶跨度
 RANGE_MARGIN_MS = 48 * 3600 * 1000
+# exhausted 判定的窗口覆盖占比阈值：实际根数覆盖时间 < 名义跨度的 50% 才认为见底。
+# 24/5 市场周末闭市占 28%、日内低流动性缺口约 2%、节假日约 5%，正常连续数据
+# 的覆盖占比约 70%；取 0.5 留足余量，兼顾 24/7（占比 ~100%）与节假日密集市场。
+MIN_WINDOW_COVERAGE_RATIO = 0.5
 
 _PERIOD_SECONDS = {
     "1min": 60, "5min": 300, "15min": 900, "30min": 1800,
@@ -252,7 +256,7 @@ async def fetch_bars(body: BarRequest, request: Request):
     except Exception as exc:  # noqa: BLE001 — 终端/品种错误统一 502
         return _error("UPSTREAM_UNAVAILABLE", str(exc), 502)
 
-    older = "available" if len(bars) >= body.limit else "exhausted"
+    older = _resolve_older_status(bars, body)
     return _ok(
         {
             "instrumentId": body.instrument.id,
@@ -275,6 +279,36 @@ async def fetch_bars(body: BarRequest, request: Request):
             "olderData": older,
         }
     )
+
+
+def _resolve_older_status(bars: list[Bar], body: BarRequest) -> str:
+    """判定向前翻页是否还有更多数据（olderData 协议字段）。
+
+    原实现 `len(bars) >= limit` 有一个市场数据特性缺陷：beforeTimestamp 模式的
+    取数窗口跨度按「名义周期 × limit」计算，但周末闭市（24/5 市场每周约 49h）与
+    日内低流动性缺口会让窗口内实际根数只约为名义值的 70%（如 XAUUSD H1 名义
+    1000 根实际 ~730 根），导致每页都被误判为 exhausted，前端左缘增量加载在
+    第一页后就停止，用户只能看到极浅的历史。
+
+    修正语义：用「最早返回 bar 与游标的覆盖时间」占名义窗口跨度的比例判定——
+    - 满页（>= limit）：必然 available。
+    - 不满页：覆盖占比 > MIN_WINDOW_COVERAGE_RATIO（0.5，留足周末 28% +
+      日内缺口 2% + 节假日 5% 的余量）说明窗口整体被真实数据填充、数据连续性
+      只是市场休市所致，前方大概率还有更多 → available；
+      占比 <= 0.5 或返回为空说明窗口已见底 → exhausted。
+    无游标（首次请求）时不做窗口推断，维持原判定（copy_rates_from_pos 给不满
+    limit 通常意味着终端历史确实见底）。
+    """
+    if len(bars) >= body.limit:
+        return "available"
+    if body.beforeTimestamp is None or not bars:
+        return "exhausted"
+
+    period_ms = _PERIOD_SECONDS[body.period] * 1000
+    window_span_ms = body.limit * period_ms + RANGE_MARGIN_MS
+    # bars 已转为真 UTC（_utc_bars），与 beforeTimestamp 同一时间轴，可直接比较。
+    covered_ms = body.beforeTimestamp - bars[0].time_ms
+    return "available" if covered_ms > window_span_ms * MIN_WINDOW_COVERAGE_RATIO else "exhausted"
 
 
 def _utc_bars(raw: list[Bar], offset_minutes: int) -> list[Bar]:
