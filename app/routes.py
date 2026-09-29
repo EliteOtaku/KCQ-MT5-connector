@@ -8,6 +8,7 @@ import json
 import math
 import time
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -105,6 +106,18 @@ class BarRequest(BaseModel):
     barAggregation: BarAggregation | None = None
 
 
+class TradingCalendarRequest(BaseModel):
+    """未来交易日历请求体（V1 协议：未来槽位时间戳的唯一权威来源）。"""
+
+    sourceId: str
+    instrument: InstrumentReference
+    period: str
+    adjustment: str = "none"
+    barAggregation: BarAggregation | None = None
+    anchorTimestamp: int = Field(ge=0)
+    count: int = Field(ge=1, le=1000)
+
+
 # ── probe ──
 
 
@@ -168,6 +181,9 @@ async def probe(request: Request) -> dict:
                 # 实时 K 线能力：/stream 对全部已声明周期提供 SSE 推送，供前端精确判定，
                 # 不再用 marketTicks 等相邻能力推断
                 "liveBars": True,
+                # 未来槽位时间戳：/trading-calendar 端点提供（crypto 24/7 线性、
+                # 传统资产跳周末），引擎据此渲染未来区真实时刻取代 T+n 相对标签
+                "tradingCalendar": True,
             },
         }
     )
@@ -207,7 +223,8 @@ def _descriptor(meta) -> dict:
         "sessionId": "MT5",
         "providerRef": {"symbol": meta.name},
         "capabilities": {
-            "bars": {"periods": list(SUPPORTED_PERIODS), "adjustments": list(SUPPORTED_ADJUSTMENTS)}
+            "bars": {"periods": list(SUPPORTED_PERIODS), "adjustments": list(SUPPORTED_ADJUSTMENTS)},
+            "tradingCalendar": True,
         },
     }
     if meta.currency:
@@ -217,6 +234,45 @@ def _descriptor(meta) -> dict:
     if meta.volume_min > 0:
         item["lotSize"] = meta.volume_min
     return item
+
+
+# ── trading-calendar ──
+
+
+def _is_trading_slot(ts_ms: int, crypto: bool) -> bool:
+    """槽位是否为交易时段：crypto 24/7 全周；传统资产跳周六/周日（UTC 判定，
+    轴显示口径与对齐锚一致；Exness 周日短棒按用户口径不建模）。"""
+    if crypto:
+        return True
+    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).weekday() < 5
+
+
+@router.post("/trading-calendar")
+async def trading_calendar(body: TradingCalendarRequest, request: Request):
+    """未来槽位交易日历：从 anchor 起按周期步长外推 count 个未来时间戳。
+
+    crypto 24/7 线性外推；传统资产跳周六/周日（周五收/周一开的精确时刻不
+    建模——轴显示粒度足够，且与下游"周日短棒不入状态机"口径一致）。
+    futureTimestamps 恒 ≤ count（引擎对超长响应整包丢弃）。
+    """
+    if body.sourceId != SOURCE_ID:
+        return _error("INVALID_REQUEST", f"unknown sourceId: {body.sourceId}", 400)
+    if body.period not in SUPPORTED_PERIODS:
+        return _error("INVALID_REQUEST", f"unsupported period: {body.period}", 400)
+    step_ms = _PERIOD_SECONDS[body.period] * 1000
+    crypto = guess_asset_class(body.instrument.symbol) == "crypto"
+
+    future: list[int] = []
+    cursor = body.anchorTimestamp
+    # 步进上限兜底：传统资产周末密度下 4×count 步内必凑满（防死循环）
+    max_steps = body.count * 4 + 7
+    steps = 0
+    while len(future) < body.count and steps < max_steps:
+        cursor += step_ms
+        steps += 1
+        if _is_trading_slot(cursor, crypto):
+            future.append(cursor)
+    return _ok({"anchorTimestamp": body.anchorTimestamp, "futureTimestamps": future})
 
 
 # ── bars ──

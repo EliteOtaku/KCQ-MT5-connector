@@ -665,3 +665,93 @@ def test_bars_europe_traditional_intraday_keeps_sunday_bars(client, fake_gateway
     assert len(items) == 2
     assert items[0]["timestamp"] == _ms(datetime(2026, 3, 8, 23, 0, tzinfo=UTC))
     assert items[1]["timestamp"] == _ms(datetime(2026, 3, 9, 0, 0, tzinfo=UTC))
+
+
+# ── trading-calendar ──
+
+
+def _cal_body(symbol: str, anchor: int, count: int) -> dict:
+    return {
+        "sourceId": "mt5",
+        "instrument": {"id": f"mt5:{symbol}", "symbol": symbol, "exchange": "MT5"},
+        "period": "60min",
+        "adjustment": "none",
+        "anchorTimestamp": anchor,
+        "count": count,
+    }
+
+
+def test_trading_calendar_crypto_is_linear(client: TestClient):
+    """BTCUSD 24/7：未来槽位按周期步长线性外推，无周末缺口。"""
+    anchor = _ms(datetime(2026, 9, 25, 12, 0, tzinfo=UTC))  # 周五
+    resp = client.post(
+        "/api/v1/market-data/trading-calendar",
+        json=_cal_body("BTCUSD", anchor, 48),
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()["data"]
+    assert body["anchorTimestamp"] == anchor
+    ts = body["futureTimestamps"]
+    assert len(ts) == 48
+    assert ts[0] == anchor + 3_600_000
+    # 周六槽位照常存在（24/7 不跳周末）：anchor+24h 落在周六 12:00
+    assert anchor + 24 * 3_600_000 in ts
+
+
+def test_trading_calendar_forex_skips_weekend(client: TestClient):
+    """XAUUSD 24/5：从周五 anchor 外推 120 槽（≈2.5 天数据量）跨周末，
+    周六/周日槽位全部缺席，周一恢复。"""
+    anchor = _ms(datetime(2026, 9, 25, 12, 0, tzinfo=UTC))  # 周五 12:00 UTC
+    resp = client.post(
+        "/api/v1/market-data/trading-calendar",
+        json=_cal_body("XAUUSD", anchor, 120),
+    )
+
+    assert resp.status_code == 200
+    ts = resp.json()["data"]["futureTimestamps"]
+    assert len(ts) == 120
+    weekdays = {datetime.fromtimestamp(t / 1000, tz=UTC).weekday() for t in ts}
+    assert 5 not in weekdays  # 周六
+    assert 6 not in weekdays  # 周日
+    # 末尾已推进到下周（跨过周末）
+    assert max(ts) > anchor + 3 * 86_400_000
+
+
+def test_trading_calendar_caps_at_count(client: TestClient):
+    """响应槽数恒 ≤ count（引擎对超长响应整包丢弃）。"""
+    anchor = _ms(datetime(2026, 9, 25, 12, 0, tzinfo=UTC))
+    resp = client.post(
+        "/api/v1/market-data/trading-calendar",
+        json=_cal_body("XAUUSD", anchor, 24),
+    )
+
+    body = resp.json()["data"]
+    assert len(body["futureTimestamps"]) <= 24
+
+
+def test_trading_calendar_rejects_bad_source_and_period(client: TestClient):
+    anchor = _ms(datetime(2026, 9, 25, 12, 0, tzinfo=UTC))
+
+    resp = client.post(
+        "/api/v1/market-data/trading-calendar", json=_cal_body("BTCUSD", anchor, 10)
+    | {"sourceId": "other"}
+    )
+    assert resp.status_code == 400
+
+    body = _cal_body("BTCUSD", anchor, 10)
+    body["period"] = "2h"
+    resp = client.post("/api/v1/market-data/trading-calendar", json=body)
+    assert resp.status_code == 400
+
+
+def test_probe_and_descriptor_declare_trading_calendar(client: TestClient):
+    """引擎三重 capability 门（source/instrument/provider）需要两端都声明。"""
+    probe = client.get("/api/v1/market-data/sources/mt5/probe").json()["data"]
+    assert probe["capabilities"]["tradingCalendar"] is True
+
+    search = client.post(
+        "/api/v1/market-data/instruments/search",
+        json={"sourceId": "mt5", "keyword": "gold", "limit": 5},
+    ).json()["data"]
+    assert search["items"][0]["capabilities"]["tradingCalendar"] is True

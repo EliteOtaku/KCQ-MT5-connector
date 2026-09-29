@@ -68,3 +68,29 @@ tickSize/lotSize 来自终端元数据）。终端不可用时 SHALL 返回 502 
 
 - **WHEN** period 为 `quarterly` 或 adjustment 为 `qfq`
 - **THEN** 返回 400 UNSUPPORTED_CAPABILITY
+
+### Requirement: 交易日历端点提供未来槽位时间戳
+
+系统 SHALL 提供 `POST /api/v1/market-data/trading-calendar`：以 `anchorTimestamp`
+（末根 UTC 毫秒）为起点、按 `period` 步长外推至多 `count` 个未来槽位时间戳，
+响应 `{anchorTimestamp, futureTimestamps}` 且 `futureTimestamps` 恒 ≤ count
+（引擎对超长响应整包丢弃）。crypto 品种 24/7 线性外推；传统资产跳周六/周日
+（UTC 判定，周五收/周一开的精确时刻不建模——轴显示粒度足够，且与下游
+"周日短棒不入状态机"口径一致）。period 不支持时返回 400；sourceId 不匹配
+返回 400 INVALID_REQUEST。源级 capabilities 与品种级 capabilities 均 SHALL
+声明 `tradingCalendar: true`（引擎三重 capability 门）。
+
+#### Scenario: crypto 线性外推
+
+- **WHEN** BTCUSD 自周五 12:00 UTC 请求 48 个槽位
+- **THEN** 返回 48 个连续小时槽（含周六，无缺口）
+
+#### Scenario: 传统资产跳周末
+
+- **WHEN** XAUUSD 自周五 12:00 UTC 请求跨周末的 120 个槽位
+- **THEN** 任一槽位都不落在周六/周日（UTC weekday 5/6）
+
+#### Scenario: 能力声明
+
+- **WHEN** probe 或 instruments/search
+- **THEN** capabilities.tradingCalendar 为 true
