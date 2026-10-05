@@ -10,3 +10,4 @@ uv.lock
 # IDE
 .idea/
 .vscode/
+server_*.log
