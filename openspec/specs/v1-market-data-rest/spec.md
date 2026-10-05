@@ -51,8 +51,13 @@ tickSize/lotSize 来自终端元数据）。终端不可用时 SHALL 返回 502 
 系统 SHALL 提供 `POST /api/v1/market-data/bars`：period/adjustment 不支持时返回
 400 UNSUPPORTED_CAPABILITY；`beforeTimestamp`（UTC 毫秒，排他上界）为空时返回最新一页
 （`copy_rates_from_pos`），非空时经服务器时间轴反向换算取窗口
-（含 ≥48h 前置余量，覆盖周末缺口与重采样桶跨度）。响应 `olderData` 按返回根数是否
-达到 limit 给出 available/exhausted；`timezone` 恒为 `UTC`。
+（含 ≥48h 前置余量，覆盖周末缺口与重采样桶跨度）。响应 `olderData` SHALL 按
+「窗口覆盖占比」判定 available/exhausted：返回根数达到 limit，或最早返回 bar 与
+`beforeTimestamp` 的覆盖时间超过名义窗口跨度（limit × 周期 + 48h 余量）的 50%
+（`MIN_WINDOW_COVERAGE_RATIO`，吸收周末闭市约 28%、日内低流动性缺口约 2%、节假日
+约 5% 的占比折损）时为 available；覆盖占比不足或返回为空才为 exhausted。
+周末/节假日缺口是市场休市所致而非历史见底，SHALL NOT 因缺口导致的根数不足
+而误判 exhausted。`timezone` 恒为 `UTC`。
 
 #### Scenario: 最新一页
 
@@ -63,6 +68,19 @@ tickSize/lotSize 来自终端元数据）。终端不可用时 SHALL 返回 502 
 
 - **WHEN** 请求携带 beforeTimestamp
 - **THEN** 返回时间戳严格小于该值的最后 limit 根
+
+#### Scenario: 周末缺口不误判见底
+
+- **WHEN** beforeTimestamp 翻页窗口（名义 1000 × 周期）因周末闭市与日内缺口
+  实际只返回约 70% 的根数（如 XAUUSD H1 约 730 根），且最早 bar 距游标的覆盖
+  时间超过名义跨度的 50%
+- **THEN** olderData 为 available，下游可继续向前翻页
+
+#### Scenario: 覆盖不足判定见底
+
+- **WHEN** beforeTimestamp 翻页返回的最早 bar 距游标的覆盖时间不足名义跨度的 50%
+  （数据确实稀疏或终端历史到底）
+- **THEN** olderData 为 exhausted
 
 #### Scenario: 不支持的能力
 
