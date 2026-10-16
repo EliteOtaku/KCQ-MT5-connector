@@ -1,12 +1,7 @@
-# 连接器入口：uvicorn 启动（uv run python ./server.py）。
+# 连接器入口（向后兼容保留）：uv run python ./server.py。
+# 新代码请用 `python -m mt5connector` 或安装后的 `mt5connector-server`。
 
-import uvicorn
-
-from app.config import load_settings
-from app.main import create_app
-
-settings = load_settings()
-app = create_app(settings)
+from mt5connector.__main__ import main
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=settings.port, log_level="info")
+    main()

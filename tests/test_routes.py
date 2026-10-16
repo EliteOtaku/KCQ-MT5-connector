@@ -6,9 +6,9 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
-from app.config import Settings
-from app.frames import Bar
-from app.main import create_app
+from mt5connector.config import Settings
+from mt5connector.frames import Bar
+from mt5connector.main import create_app
 from conftest import FakeGateway
 from fastapi.testclient import TestClient
 

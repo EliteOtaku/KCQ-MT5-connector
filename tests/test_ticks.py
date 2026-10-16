@@ -7,9 +7,9 @@ import asyncio
 import json
 import time
 
-from app.config import Settings
-from app.frames import Tick, TicksFrame, frame_payload, frame_type
-from app.main import create_app
+from mt5connector.config import Settings
+from mt5connector.frames import Tick, TicksFrame, frame_payload, frame_type
+from mt5connector.main import create_app
 from conftest import FakeGateway
 from fastapi.testclient import TestClient
 

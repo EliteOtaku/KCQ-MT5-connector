@@ -16,9 +16,11 @@ KCQ-NexusAI 的 core 行情层。
 ## 代码要求
 
 - 拒绝治标不治本的最小修复；不做复杂化架构。
-- MetaTrader5 调用必须经 `app/gateway.py` 单工作线程串行执行；其他模块禁止直接 import MetaTrader5。
-- 全部可调参数集中在 `app/config.py`（env → Settings），禁止散落 `os.environ`。
+- MetaTrader5 调用必须经 `mt5connector/gateway.py` 单工作线程串行执行；其他模块禁止直接 import MetaTrader5。
+- 全部可调参数集中在 `mt5connector/config.py`（env → Settings），禁止散落 `os.environ`。
 - 注释正文中文、技术用语保留英文；每文件头部注释说明用途，每函数注释说明职责。
+- 包名固定 `mt5connector`（发行名 `kcq-mt5-connector`）：新增模块用相对导入（`from .x import`），
+  禁止写死 `mt5connector.` 绝对前缀，以便包改名或内嵌复用。
 
 ## Commands
 
@@ -26,7 +28,9 @@ KCQ-NexusAI 的 core 行情层。
 |---------|------|
 | `uv sync` | 安装依赖（首次） |
 | `uv run python ./server.py` | 启动连接器（:8090，需 Windows + 已登录 MT5 终端） |
+| `python -m mt5connector` | 等价启动入口（安装后可用） |
 | `uv run pytest` | 全量测试（FakeGateway 替身，无需终端） |
+| `uv build` | 构建 wheel/sdist（验证可安装性） |
 | `npx @fission-ai/openspec validate --all --strict` | 校验 OpenSpec 规格 |
 
 ## Testing
@@ -39,11 +43,14 @@ KCQ-NexusAI 的 core 行情层。
 ## Domain Invariants
 
 - MT5 时间戳是伪 UTC（服务器墙钟），出网关前必须经实测偏移转真 UTC。
-- 周日短棒不剔除：日内原生保留；4h/日/周/月经 UTC 边界重采样自然并入周一首根。
-- 对齐锚恒为 UTC（4h 边界 {00,04,08,12,16,20}，日线 UTC 00:00）；`ALIGN_UTC=off` 关闭对齐走原生边界。
-- Exness 检测（company/server 判定）→ 缺省 `barAggregation` 默认 `europe-traditional`：UTC 周日的
-  日线短棒并入下一根周一（成交量仅为正常日线约 5% 的开盘噪声，不并入会扭曲窗口指标）；
-  非 Exness 缺省 `original`；显式传值总是覆盖默认。
+- 周日短棒不剔除：日内原生保留；日/周/月经重采样自然并入周一首根。
+- **对齐锚按口径分派**（`routes.py` 的 `_load_series` 调用点）：
+  - `europe-traditional` + `4h` → **NY-close 锚**（纽约 17:00 日界，跟随美国 DST）
+  - 其余对齐路径 → **UTC 自然边界**（4h 边界 {00,04,08,12,16,20}，日线 UTC 00:00）
+  - `ALIGN_UTC=off` 关闭对齐，全部走原生边界
+- Exness 检测（company/server 判定）→ 缺省 `barAggregation` 默认 `europe-traditional`：
+  UTC 周日的日线短棒并入下一根周一（成交量仅为正常日线约 5% 的开盘噪声，
+  不并入会扭曲窗口指标）；非 Exness 缺省 `original`；显式传值总是覆盖默认。
 
 ## 职责边界（最重要——AI 编码前必读）
 
@@ -62,6 +69,11 @@ KCQ-NexusAI 的 core 行情层。
   `beforeTimestamp` 翻页），不要猜测 MT5 终端的 limit/深度语义。
 - 新增经纪商数据缺陷（如某平台假日历异常）时，修正收敛在本服务内部实现，
   下游无感知；必要时先改 `openspec/specs/exness-alignment/` 规格再动代码。
+- **本包可被其他项目作为 Git 依赖引入**（`pip install git+...@vX.Y.Z`）：
+  对外稳定面 = `mt5connector.align`（纯函数，无 MT5 依赖，跨平台）+
+  `mt5connector.gateway`（取数，仅 Windows）+ `mt5connector.config`（Settings）。
+  改动这三个模块的公开签名视为**破坏性变更**，需升 minor 并打 tag。
+  纯对齐逻辑（`align.py`）必须保持零 MT5 依赖，以便非 Windows 消费方复用。
 
 ## Committing
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.frames import StatusFrame
-from app.hub import StreamHub
+from mt5connector.frames import StatusFrame
+from mt5connector.hub import StreamHub
 
 
 def _frame(detail: str = "x"):
@@ -87,7 +87,7 @@ def test_subscriber_fanout_and_unregister():
 
 
 def test_snapshot_frame_payload_shape():
-    from app.frames import Bar, SnapshotFrame, frame_payload
+    from mt5connector.frames import Bar, SnapshotFrame, frame_payload
 
     frame = SnapshotFrame("XAUUSD", "4h", (Bar(1000, 1, 2, 0.5, 1.5, 10, 0),))
     payload = frame_payload(frame)

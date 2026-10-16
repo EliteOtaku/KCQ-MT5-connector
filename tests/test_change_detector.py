@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.aggregator import ChangeDetector
-from app.frames import Bar, ClosedFrame, FormingFrame, SnapshotFrame
+from mt5connector.aggregator import ChangeDetector
+from mt5connector.frames import Bar, ClosedFrame, FormingFrame, SnapshotFrame
 
 
 def bar(ts: int, close: float = 1.5, volume: float = 100) -> Bar:

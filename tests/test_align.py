@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.align import merge_sunday_bars, resample, server_to_utc_ms
-from app.frames import Bar
+from mt5connector.align import merge_sunday_bars, resample, server_to_utc_ms
+from mt5connector.frames import Bar
 
 UTC = timezone.utc
 

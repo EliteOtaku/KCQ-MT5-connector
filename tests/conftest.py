@@ -7,10 +7,10 @@ import time as time_module
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import Settings
-from app.gateway import SymbolMeta, QuoteTickProbe
-from app.main import create_app
-from app.frames import Bar, Tick
+from mt5connector.config import Settings
+from mt5connector.gateway import SymbolMeta, QuoteTickProbe
+from mt5connector.main import create_app
+from mt5connector.frames import Bar, Tick
 
 
 class FakeGateway:

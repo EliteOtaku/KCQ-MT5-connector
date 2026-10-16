@@ -21,6 +21,16 @@ from .ticks import TickAggregator
 logger = logging.getLogger("mt5.app")
 
 
+def _version() -> str:
+    """包版本单一事实来源（pyproject）；源码直跑（未安装）时回退 unknown。"""
+    try:
+        from importlib.metadata import version  # noqa: PLC0415
+
+        return version("kcq-mt5-connector")
+    except Exception:  # noqa: BLE001 — 未安装场景不阻断启动
+        return "unknown"
+
+
 def create_app(
     settings: Settings | None = None,
     gateway: Mt5Gateway | None = None,
@@ -56,7 +66,7 @@ def create_app(
                 task.cancel()
             await resolved_gateway.shutdown()
 
-    app = FastAPI(title="KCQ-MT5-connector", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="KCQ-MT5-connector", version=_version(), lifespan=lifespan)
     # 本地连接器被前端 dev server（5273 等端口）跨源直连，放开 CORS
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
