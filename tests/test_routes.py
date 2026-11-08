@@ -837,3 +837,18 @@ def test_quotes_project_latest_and_previous_close(fake_gateway: FakeGateway):
     assert payload["instrumentId"] == "mt5:XAUUSD"
     assert payload["last"] == 11
     assert payload["prevClose"] == 10
+
+
+def test_private_network_access_preflight(client: TestClient):
+    """公开页面直连本机时 Chrome 的 PNA 预检需要允许头。"""
+    resp = client.options(
+        "/api/v1/market-data/bars",
+        headers={
+            "Origin": "https://363045841.github.io",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Private-Network": "true",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-private-network") == "true"

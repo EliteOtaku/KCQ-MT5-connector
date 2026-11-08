@@ -67,9 +67,14 @@ def create_app(
             await resolved_gateway.shutdown()
 
     app = FastAPI(title="KCQ-MT5-connector", version=_version(), lifespan=lifespan)
-    # 本地连接器被前端 dev server（5273 等端口）跨源直连，放开 CORS
+    # 本地连接器被前端 dev server（5273 等端口）与公开页面跨源直连，放开 CORS；
+    # allow_private_network 放行 Chrome 对「公开页面 → 127.0.0.1」的 PNA 预检。
     app.add_middleware(
-        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_private_network=True,
     )
     app.state.settings = resolved
     app.state.gateway = resolved_gateway
