@@ -7,8 +7,9 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from mt5connector.config import Settings
-from mt5connector.frames import Bar
+from mt5connector.frames import Bar, SnapshotFrame
 from mt5connector.main import create_app
+from mt5connector.quotes import QuoteProjection
 from conftest import FakeGateway
 from fastapi.testclient import TestClient
 
@@ -837,3 +838,59 @@ def test_quotes_project_latest_and_previous_close(fake_gateway: FakeGateway):
     assert payload["instrumentId"] == "mt5:XAUUSD"
     assert payload["last"] == 11
     assert payload["prevClose"] == 10
+
+
+def test_quotes_seed_baseline_when_aligned_snapshot_has_single_bar(fake_gateway: FakeGateway):
+    """周日短棒并入周一后快照只剩一根，仍靠历史基准推送报价。
+
+    Exness 默认口径 europe-traditional 会压缩尾部：快照只含周一，投影凑不出
+    「最新价 + 昨收」。建连时必须用历史日线补齐前一根。
+    """
+    friday = datetime(2026, 8, 14, 0, 0, tzinfo=UTC)
+    sunday = datetime(2026, 8, 16, 0, 0, tzinfo=UTC)
+    monday = datetime(2026, 8, 17, 0, 0, tzinfo=UTC)
+    fake_gateway.rates[("XAUUSD", "daily")] = [
+        Bar(_ms(friday), 1, 2, 0.5, 10, 100, 0),
+        Bar(_ms(sunday), 1, 2, 0.5, 10.5, 10, 0),
+        Bar(_ms(monday), 1, 2, 0.5, 11, 100, 0),
+    ]
+    app = create_app(settings=Settings(), gateway=fake_gateway)
+
+    body = asyncio.run(
+        _collect_sse(
+            app,
+            "/api/v1/market-data/sources/mt5/quotes",
+            "instruments=mt5:XAUUSD",
+            lambda text: '"type": "quote"' in text,
+        )
+    )
+
+    line = next(line for line in body.splitlines() if '"type": "quote"' in line)
+    payload = json.loads(line[len("data: "):])
+    assert payload["last"] == 11
+    assert payload["prevClose"] == 10
+
+
+def test_quote_projection_seed_completes_baseline():
+    """注入历史后，仅一根实时快照也能算出最新价与昨收。"""
+    day0 = 1_790_000_000_000
+    day1 = day0 + 86_400_000
+    projection = QuoteProjection()
+    projection.seed("mt5:XAUUSD", (Bar(day0, 1, 2, 0.5, 10, 100, 0),))
+
+    quote = projection.push(SnapshotFrame("mt5:XAUUSD", (Bar(day1, 1, 2, 0.5, 11, 100, 0),)))
+
+    assert quote is not None
+    assert quote["last"] == 11
+    assert quote["prevClose"] == 10
+
+
+def test_quote_projection_without_baseline_returns_none():
+    """基准不足两根时返回空且不抛错，等后续帧补足。"""
+    projection = QuoteProjection()
+
+    quote = projection.push(
+        SnapshotFrame("mt5:XAUUSD", (Bar(1_790_000_000_000, 1, 2, 0.5, 11, 100, 0),))
+    )
+
+    assert quote is None

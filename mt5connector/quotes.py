@@ -1,7 +1,9 @@
 # 报价投影：把日线实时帧压成最新价与昨收。
-# 报价不新增上游查询路径——它复用图表同一条日线实时流，只取尾部两根。
+# 基准来自建连时的一次性历史查询，实时帧只负责增量；两者共用同一份尾部窗口。
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 from .frames import Bar, ClosedFrame, FormingFrame, Frame, SnapshotFrame, quote_payload
 
@@ -19,7 +21,10 @@ class QuoteProjection:
     def push(self, frame: Frame) -> dict[str, object] | None:
         """送入一帧；产生新的报价才返回载荷，其余帧返回 None。"""
         if isinstance(frame, SnapshotFrame):
-            self._bars[frame.instrument_id] = list(frame.bars)[-_KEEP_BARS:]
+            # 快照可能只剩一根（对齐口径压缩尾部）；按时间戳并入而非覆盖，
+            # 保留建连时注入的历史基准，否则 seed 会被快照冲掉。
+            for bar in frame.bars:
+                self._upsert(frame.instrument_id, bar)
         elif isinstance(frame, (FormingFrame, ClosedFrame)):
             self._upsert(frame.instrument_id, frame.bar)
         else:
@@ -51,3 +56,13 @@ class QuoteProjection:
             return None
         self._emitted[instrument_id] = marker
         return quote_payload(instrument_id, last.close, previous.close, last.time_ms)
+
+    def seed(self, instrument_id: str, bars: Iterable[Bar]) -> None:
+        """注入历史日线补齐基准。
+
+        对齐口径会压缩尾部（Exness 的 europe-traditional 把周日短棒并入周一），
+        实时快照可能只剩一根；先注入历史才能凑出「最新价 + 昨收」两根。
+        重复注入按时间戳覆盖，不产生重复根。
+        """
+        for bar in bars:
+            self._upsert(instrument_id, bar)

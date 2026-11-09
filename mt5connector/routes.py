@@ -42,6 +42,8 @@ from .ticks import TickAggregator, tick_stream_key
 SUPPORTED_PERIODS = ("1min", "5min", "15min", "30min", "60min", "4h", "daily", "weekly", "monthly")
 SUPPORTED_ADJUSTMENTS = ("none",)
 MAX_BAR_LIMIT = 1000
+# 报价基准预取根数：对齐口径合并周日短棒后会少一根，取 5 根保证尾部仍有 ≥2 根。
+QUOTE_SEED_BARS = 5
 # 请求窗口在服务器时间轴上的前置余量（毫秒）：覆盖周末缺口与重采样桶跨度
 RANGE_MARGIN_MS = 48 * 3600 * 1000
 # exhausted 判定的窗口覆盖占比阈值：实际根数覆盖时间 < 名义跨度的 50% 才认为见底。
@@ -544,6 +546,7 @@ async def stream(
 async def quotes(instruments: str, request: Request):
     """报价是日线实时流的投影：最新价与昨收，不引入第二条上游查询路径。"""
     state = request.app.state
+    gateway: Mt5Gateway = state.gateway
     try:
         parsed = _parse_instruments(instruments)
     except ValueError as exc:
@@ -564,6 +567,27 @@ async def quotes(instruments: str, request: Request):
         aggregator.ensure(key, resnapshot=True)
 
     projection = QuoteProjection()
+    # 对齐口径会把尾部压到一根（Exness 的 europe-traditional 并入周日短棒），
+    # 建连时先用历史日线补齐基准，否则投影永远凑不出「最新价 + 昨收」。
+    try:
+        offset = await state.clock.ensure_fresh()
+    except Exception:  # noqa: BLE001 — 偏移取不到时按 0 兜底，不阻断连接建立
+        offset = 0
+    for instrument_id_value, symbol in parsed:
+        body = BarRequest(
+            sourceId=SOURCE_ID,
+            instrument=InstrumentReference(id=instrument_id_value, symbol=symbol),
+            period="daily",
+            limit=QUOTE_SEED_BARS,
+            barAggregation=aggregation,
+        )
+        try:
+            seeded = await _load_series(gateway, body, "none", offset)
+            if aggregation == EUROPE_TRADITIONAL_BAR_AGGREGATION:
+                seeded = align.merge_sunday_bars(seeded)
+        except Exception:  # noqa: BLE001 — 基准缺一根仍可由后续实时帧补足
+            continue
+        projection.seed(instrument_id_value, seeded)
 
     async def event_stream():
         sink: asyncio.Queue[RingEntry] = asyncio.Queue()
