@@ -25,6 +25,9 @@ RESAMPLE_D1_TARGETS = frozenset({"weekly", "monthly"})
 # NY-close 锚当前支持的目标周期（日界 = 纽约 17:00，跟随美国夏令时）
 RESAMPLE_NY_CLOSE_TARGETS = frozenset({"4h"})
 
+# 周日短桩判据：周日日线成交量不超过前一日的这个比例，才视为周开盘的两小时残棒。
+# 加密品种周日照常交易，成交量与平日同量级，因此整根保留。
+STUB_SUNDAY_VOLUME_RATIO = 0.3
 _NY_TZ = ZoneInfo("America/New_York")
 
 
@@ -132,13 +135,32 @@ def resample(
     ]
 
 
+def _is_stub_sunday(bar: Bar, monday: Bar) -> bool:
+    """周日棒是否只是周开盘的短桩：成交量远低于紧随其后的周一。
+
+    24×7 的加密品种周日是完整交易日，成交量与周一同一量级，不能被并入周一；
+    传统外汇与金属的周日只有开盘两小时，成交量通常是周一的很小一部分。
+    用相对成交量的判据，避免依赖品种命名与类别猜测。
+
+    @param bar 周日日线
+    @param monday 紧随其后的周一日线
+    @returns 是否属于短桩
+    """
+    if monday.volume <= 0:
+        return False
+    return bar.volume <= monday.volume * STUB_SUNDAY_VOLUME_RATIO
+
+
 def merge_sunday_bars(bars: list[Bar]) -> list[Bar]:
-    """把 UTC 周日的日线短棒并入下一根周一（传统欧洲券商口径），其余序列原样。
+    """把 UTC 周日的日线短桩并入下一根周一（传统欧洲券商口径），其余序列原样。
 
     Exness 服务器时间恰为 UTC 时，周开盘（周日 22:00 UTC）之后的 2 小时数据
     会形成一根独立的周日日线（成交量仅为正常日线的约 5%），凭空占据一个 K 线位。
-    传统欧洲券商口径下这 2 小时并入周一日线。非周日 bar 与序列末尾的孤立周日 bar
-    保持原样；对不含周日 bar 的序列是 no-op。
+    传统欧洲券商口径下这 2 小时并入周一日线。
+
+    只有「短桩」才合并：加密品种周日照常交易，成交量与平日同量级，整根保留，
+    否则会把完整的一天并进周一、并让时间轴少一格。非周日 bar 与序列末尾的孤立
+    周日 bar 保持原样；对不含周日 bar 的序列是 no-op。
     """
     if not bars:
         return []
@@ -147,7 +169,7 @@ def merge_sunday_bars(bars: list[Bar]) -> list[Bar]:
     while i < len(bars):
         bar = bars[i]
         dt = datetime.datetime.fromtimestamp(bar.time_ms / 1000, tz=datetime.timezone.utc)
-        if dt.weekday() == 6 and i + 1 < len(bars):
+        if dt.weekday() == 6 and i + 1 < len(bars) and _is_stub_sunday(bar, bars[i + 1]):
             nxt = bars[i + 1]
             ndt = datetime.datetime.fromtimestamp(nxt.time_ms / 1000, tz=datetime.timezone.utc)
             if ndt.weekday() == 0:

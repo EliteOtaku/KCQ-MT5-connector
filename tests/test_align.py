@@ -121,7 +121,7 @@ def _daily(ts: datetime, o: float, c: float, volume: float = 100.0) -> Bar:
 class TestMergeSundayBars:
     def _sunday(self, day: int, month: int = 3, o: float = 10.0, c: float = 10.5, volume: float = 5.0) -> Bar:
         # 2026-03 的周日均为 UTC 周日
-        return _daily(datetime(2026, 3, day, 0, 0, tzinfo=UTC), o, c, volume=5.0)
+        return _daily(datetime(2026, 3, day, 0, 0, tzinfo=UTC), o, c, volume=volume)
 
     def test_sunday_merges_into_next_monday(self):
         bars = [
@@ -136,6 +136,14 @@ class TestMergeSundayBars:
         assert merged[0].low == 5.0        # min(10-5, 12-5)
         assert merged[0].close == 12.0     # 周一 close 为合并后 close
         assert merged[0].volume == 305.0   # volume 相加
+
+    def test_full_volume_sunday_is_preserved(self):
+        # 加密品种周日是完整交易日：成交量与周一同量级，整根保留，不并入周一
+        bars = [
+            self._sunday(8, o=10.0, c=10.5, volume=260.0),
+            _daily(datetime(2026, 3, 9, 0, 0, tzinfo=UTC), 11.0, 12.0, volume=300.0),
+        ]
+        assert merge_sunday_bars(bars) == bars
 
     def test_sequence_without_sunday_is_noop(self):
         bars = [

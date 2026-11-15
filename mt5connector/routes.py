@@ -329,6 +329,7 @@ async def fetch_bars(body: BarRequest, request: Request):
             "adjustment": body.adjustment,
             "barAggregation": aggregation,
             "timezone": "UTC",
+            "volumeUnit": "tickVolume",
             "items": [
                 {
                     "timestamp": bar.time_ms,

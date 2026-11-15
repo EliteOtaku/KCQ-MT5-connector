@@ -10,6 +10,10 @@ from dataclasses import dataclass
 # 偏移探测品种优先级：加密优先（周末也有报价 tick），外汇/金属兜底
 PROBE_SYMBOLS = ("BTCUSD", "ETHUSD", "EURUSD", "XAUUSD")
 
+# 报价 tick 的新鲜度上限（秒）。陈旧 tick 只差了几小时会被取整成错误的整小时偏移，
+# 一旦接受就会让全部 K 线整体平移，因此超过这个年龄一律不采信。
+FRESH_TICK_SECONDS = 300.0
+
 
 @dataclass
 class OffsetSample:
@@ -19,16 +23,30 @@ class OffsetSample:
     ok: bool
 
 
-def measure_offset_minutes(last_quote_tick_server_seconds: float | None) -> OffsetSample:
+def measure_offset_minutes(
+    last_quote_tick_server_seconds: float | None,
+    now_seconds: float | None = None,
+) -> OffsetSample:
     """由最后报价 tick 服务器时间推算服务器领先 UTC 的整小时偏移。
 
     本机时钟与服务器时钟差取整到小时后模 24h 归一到 [-12h, +12h)，
-    消除周末停市期间累积的天数偏移。报价 tick 缺失时返回 ok=False。
+    消除周末停市期间累积的天数偏移。报价 tick 缺失或陈旧时返回 ok=False：
+    陈旧 tick 的时间差会落在整小时边界附近，取整后偏差可达数小时。
+
+    @param last_quote_tick_server_seconds 最后报价 tick 的服务器时间（秒）
+    @param now_seconds 当前时间（秒）；缺省取系统时间，便于测试固定时钟
+    @returns 偏移分钟数与是否可信
     """
     if last_quote_tick_server_seconds is None or last_quote_tick_server_seconds <= 0:
         return OffsetSample(0, False)
-    delta_hours = round((time.time() - float(last_quote_tick_server_seconds)) / 3600.0)
-    normalized = (delta_hours + 12) % 24 - 12
+    now = time.time() if now_seconds is None else float(now_seconds)
+    delta_seconds = now - float(last_quote_tick_server_seconds)
+    hours = round(delta_seconds / 3600.0)
+    # 新鲜 tick 的残差只有本机与服务器的秒级时钟偏差；残差过大说明 tick 陈旧，
+    # 此时整小时取整会把偏差放大到 1 小时以上，宁可判定失败沿用上次成功值。
+    if abs(delta_seconds - hours * 3600.0) > FRESH_TICK_SECONDS:
+        return OffsetSample(0, False)
+    normalized = (hours + 12) % 24 - 12
     return OffsetSample(int(normalized) * 60, True)
 
 
